@@ -6,9 +6,10 @@ insert into Postgres.
 import sys
 import os
 import psycopg2
+
 from run_on_repo import find_py_files
 from chunker import chunk_file
-from embed_stub import stub_embed  # real ingestion should use embed.embed_chunks instead
+from embed import embed_chunks
 
 from dotenv import load_dotenv
 load_dotenv(override=True)
@@ -30,8 +31,17 @@ def ingest(repo_root: str, repo_id: str):
             print(f"  PARSE FAIL {path}: {e}")
             continue
 
-        for c in chunks:
-            embedding = stub_embed(c.docstring or "" + c.content)
+        if not chunks:
+            continue
+
+        try:
+            embeddings = embed_chunks(chunks)
+        except Exception as e:
+            failed += len(chunks)
+            print(f"  EMBED FAIL {path}: {e}")
+            continue
+
+        for c, embedding in zip(chunks, embeddings):
             try:
                 cur.execute(
                     """
@@ -48,10 +58,12 @@ def ingest(repo_root: str, repo_id: str):
                         c.is_trivial, embedding,
                     ),
                 )
+
                 if cur.rowcount == 1:
                     inserted += 1
                 else:
-                    skipped += 1  # conflict, already ingested
+                    skipped += 1
+
             except Exception as e:
                 conn.rollback()
                 failed += 1
@@ -61,7 +73,12 @@ def ingest(repo_root: str, repo_id: str):
     conn.commit()
     cur.close()
     conn.close()
-    print(f"\nInserted: {inserted}, skipped (dupes): {skipped}, failed: {failed}")
+
+    print(
+        f"\nInserted: {inserted}, "
+        f"skipped (dupes): {skipped}, "
+        f"failed: {failed}"
+    )
 
 
 if __name__ == "__main__":

@@ -9,7 +9,7 @@ Anthropic-adjacent chat completions interface.
 import os
 from groq import Groq
 
-MODEL = "llama-3.3-70b-versatile"  # solid general-purpose free-tier model
+MODEL = "openai/gpt-oss-20b"  # solid general-purpose free-tier model
 
 SYSTEM_PROMPT = """You are a codebase Q&A assistant. You will be given a \
 question and a set of code chunks retrieved from the repository, each \

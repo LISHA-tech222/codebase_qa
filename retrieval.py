@@ -116,7 +116,7 @@ def hybrid_search(query: str, query_embedding: list[float], top_k: int = 10):
 
     cur.execute(
         """
-        SELECT id, file_path, symbol_name, symbol_type, start_line, end_line, docstring
+        SELECT id, file_path, symbol_name, symbol_type, start_line, end_line, docstring, content
         FROM chunks WHERE id = ANY(%s)
         """,
         (merged_ids,),
