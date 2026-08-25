@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+venv/
+*.egg-info/
+
+# Environment / secrets — never commit real credentials
+.env
+
+# Local scratch clones used for testing against a real repo
+/scratch-repos/
