@@ -1,0 +1,557 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Codebase Q&A Assistant</title>
+
+    <style>
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            margin: 0;
+            font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+            background: #f6f7fb;
+            color: #1f2937;
+        }
+
+        .app {
+            max-width: 1000px;
+            margin: 0 auto;
+            padding: 40px 20px;
+        }
+
+        .header {
+            margin-bottom: 28px;
+        }
+
+        .badge {
+            display: inline-block;
+            padding: 6px 12px;
+            border-radius: 20px;
+            background: #e8f0fe;
+            color: #2563eb;
+            font-size: 13px;
+            font-weight: 600;
+            margin-bottom: 12px;
+        }
+
+        h1 {
+            margin: 0;
+            font-size: 34px;
+            letter-spacing: -0.8px;
+        }
+
+        .subtitle {
+            margin-top: 8px;
+            color: #6b7280;
+            font-size: 16px;
+        }
+
+        .card {
+            background: white;
+            border: 1px solid #e5e7eb;
+            border-radius: 16px;
+            padding: 22px;
+            margin-bottom: 20px;
+            box-shadow: 0 4px 18px rgba(0, 0, 0, 0.04);
+        }
+
+        .section-title {
+            font-size: 16px;
+            font-weight: 700;
+            margin-bottom: 12px;
+        }
+
+        .repo-row {
+            display: flex;
+            gap: 10px;
+        }
+
+        input,
+        textarea {
+            width: 100%;
+            border: 1px solid #d1d5db;
+            border-radius: 10px;
+            padding: 12px 14px;
+            font-size: 15px;
+            outline: none;
+            font-family: inherit;
+        }
+
+        textarea {
+            min-height: 110px;
+            resize: vertical;
+        }
+
+        input:focus,
+        textarea:focus {
+            border-color: #2563eb;
+            box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
+        }
+
+        button {
+            border: none;
+            border-radius: 10px;
+            padding: 12px 18px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            background: #2563eb;
+            color: white;
+            white-space: nowrap;
+        }
+
+        button:hover {
+            background: #1d4ed8;
+        }
+
+        button:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+
+        .ask-row {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+
+        .status {
+            display: none;
+            margin-top: 14px;
+            padding: 11px 14px;
+            border-radius: 10px;
+            font-size: 14px;
+        }
+
+        .status.show {
+            display: block;
+        }
+
+        .status.info {
+            background: #eff6ff;
+            color: #1d4ed8;
+        }
+
+        .status.success {
+            background: #ecfdf5;
+            color: #047857;
+        }
+
+        .status.error {
+            background: #fef2f2;
+            color: #b91c1c;
+        }
+
+        .answer {
+            white-space: pre-wrap;
+            line-height: 1.7;
+            font-size: 15px;
+            color: #374151;
+        }
+
+        .sources {
+            margin-top: 22px;
+            border-top: 1px solid #e5e7eb;
+            padding-top: 18px;
+        }
+
+        .source {
+            display: inline-block;
+            background: #f3f4f6;
+            border-radius: 8px;
+            padding: 7px 10px;
+            margin: 4px 5px 4px 0;
+            font-family: monospace;
+            font-size: 12px;
+            color: #374151;
+        }
+
+        .empty {
+            color: #9ca3af;
+            font-size: 14px;
+        }
+
+        .loading {
+            display: none;
+            align-items: center;
+            gap: 8px;
+            color: #6b7280;
+            font-size: 14px;
+            margin-top: 12px;
+        }
+
+        .loading.show {
+            display: flex;
+        }
+
+        .dot {
+            width: 7px;
+            height: 7px;
+            border-radius: 50%;
+            background: #2563eb;
+            animation: pulse 1s infinite alternate;
+        }
+
+        @keyframes pulse {
+            from {
+                opacity: 0.3;
+            }
+            to {
+                opacity: 1;
+            }
+        }
+
+        footer {
+            text-align: center;
+            color: #9ca3af;
+            font-size: 13px;
+            padding: 20px 0;
+        }
+
+        @media (max-width: 650px) {
+            .app {
+                padding: 25px 14px;
+            }
+
+            h1 {
+                font-size: 28px;
+            }
+
+            .repo-row {
+                flex-direction: column;
+            }
+
+            button {
+                width: 100%;
+            }
+        }
+    </style>
+</head>
+
+<body>
+
+<div class="app">
+
+    <div class="header">
+        <div class="badge">AI • RAG • Code Intelligence</div>
+        <h1>Codebase Q&A Assistant</h1>
+        <div class="subtitle">
+            Ingest a GitHub repository and ask questions about its code using AI-powered retrieval.
+        </div>
+    </div>
+
+    <!-- Repository -->
+    <div class="card">
+
+        <div class="section-title">1. Connect a GitHub Repository</div>
+
+        <div class="repo-row">
+            <input
+                id="repoUrl"
+                type="url"
+                placeholder="https://github.com/username/repository"
+            >
+
+            <button id="ingestBtn">
+                Ingest Repository
+            </button>
+        </div>
+
+        <div id="ingestStatus" class="status"></div>
+
+        <div id="ingestLoading" class="loading">
+            <div class="dot"></div>
+            <span>Cloning, chunking and embedding repository...</span>
+        </div>
+
+    </div>
+
+    <!-- Question -->
+    <div class="card">
+
+        <div class="section-title">2. Ask About the Code</div>
+
+        <div class="ask-row">
+
+            <textarea
+                id="question"
+                placeholder="Example: What does this codebase do?"
+            ></textarea>
+
+            <button id="askBtn">
+                Ask Question
+            </button>
+
+        </div>
+
+        <div id="askLoading" class="loading">
+            <div class="dot"></div>
+            <span>Searching the codebase and generating an answer...</span>
+        </div>
+
+    </div>
+
+    <!-- Answer -->
+    <div id="answerCard" class="card" style="display:none;">
+
+        <div class="section-title">AI Answer</div>
+
+        <div id="answer" class="answer"></div>
+
+        <div class="sources">
+
+            <div class="section-title">Sources</div>
+
+            <div id="sources"></div>
+
+        </div>
+
+    </div>
+
+    <footer>
+        Codebase Q&A Assistant • FastAPI • pgvector • FastEmbed • Groq
+    </footer>
+
+</div>
+
+<script>
+
+const repoUrl = document.getElementById("repoUrl");
+const question = document.getElementById("question");
+
+const ingestBtn = document.getElementById("ingestBtn");
+const askBtn = document.getElementById("askBtn");
+
+const ingestStatus = document.getElementById("ingestStatus");
+const ingestLoading = document.getElementById("ingestLoading");
+const askLoading = document.getElementById("askLoading");
+
+const answerCard = document.getElementById("answerCard");
+const answer = document.getElementById("answer");
+const sources = document.getElementById("sources");
+
+
+function showStatus(element, message, type) {
+
+    element.textContent = message;
+
+    element.className = "status show " + type;
+}
+
+
+function repoIdFromUrl(url) {
+
+    try {
+
+        const parsed = new URL(url);
+
+        const parts = parsed.pathname
+            .split("/")
+            .filter(Boolean);
+
+        if (parts.length >= 2) {
+
+            return parts[1]
+                .replace(/\.git$/, "");
+
+        }
+
+    } catch (error) {
+
+        return "";
+
+    }
+
+    return "";
+}
+
+
+ingestBtn.addEventListener("click", async () => {
+
+    const url = repoUrl.value.trim();
+
+    if (!url) {
+
+        showStatus(
+            ingestStatus,
+            "Please enter a GitHub repository URL.",
+            "error"
+        );
+
+        return;
+    }
+
+    const repoId = repoIdFromUrl(url);
+
+    if (!repoId) {
+
+        showStatus(
+            ingestStatus,
+            "Please enter a valid GitHub repository URL.",
+            "error"
+        );
+
+        return;
+    }
+
+    ingestBtn.disabled = true;
+
+    ingestLoading.classList.add("show");
+
+    ingestStatus.className = "status";
+
+    try {
+
+        const response = await fetch("/ingest", {
+
+            method: "POST",
+
+            headers: {
+                "Content-Type": "application/json"
+            },
+
+            body: JSON.stringify({
+                repo_url: url,
+                repo_id: repoId
+            })
+
+        });
+
+        const data = await response.json();
+
+        if (!response.ok) {
+
+            throw new Error(
+                data.detail || "Repository ingestion failed."
+            );
+
+        }
+
+        showStatus(
+            ingestStatus,
+            `Repository "${data.repo_id}" ingested successfully.`,
+            "success"
+        );
+
+    } catch (error) {
+
+        showStatus(
+            ingestStatus,
+            error.message || "Something went wrong.",
+            "error"
+        );
+
+    } finally {
+
+        ingestBtn.disabled = false;
+
+        ingestLoading.classList.remove("show");
+
+    }
+
+});
+
+
+askBtn.addEventListener("click", async () => {
+
+    const text = question.value.trim();
+
+    if (!text) {
+
+        alert("Please enter a question.");
+
+        return;
+    }
+
+    askBtn.disabled = true;
+
+    askLoading.classList.add("show");
+
+    answerCard.style.display = "none";
+
+    try {
+
+        const response = await fetch("/ask", {
+
+            method: "POST",
+
+            headers: {
+                "Content-Type": "application/json"
+            },
+
+            body: JSON.stringify({
+                question: text,
+                top_k: 5
+            })
+
+        });
+
+        const data = await response.json();
+
+        if (!response.ok) {
+
+            throw new Error(
+                data.detail || "Failed to get an answer."
+            );
+
+        }
+
+        answer.textContent = data.answer || "No answer generated.";
+
+        sources.innerHTML = "";
+
+        if (data.sources && data.sources.length > 0) {
+
+            data.sources.forEach(source => {
+
+                const item = document.createElement("span");
+
+                item.className = "source";
+
+                item.textContent = source;
+
+                sources.appendChild(item);
+
+            });
+
+        } else {
+
+            const empty = document.createElement("div");
+
+            empty.className = "empty";
+
+            empty.textContent = "No sources returned.";
+
+            sources.appendChild(empty);
+
+        }
+
+        answerCard.style.display = "block";
+
+    } catch (error) {
+
+        answer.textContent =
+            error.message || "Something went wrong.";
+
+        sources.innerHTML = "";
+
+        answerCard.style.display = "block";
+
+    } finally {
+
+        askBtn.disabled = false;
+
+        askLoading.classList.remove("show");
+
+    }
+
+});
+
+</script>
+
+</body>
+</html>

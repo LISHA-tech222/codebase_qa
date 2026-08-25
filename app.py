@@ -3,6 +3,9 @@ Minimal web server wrapping the ingestion + retrieval + generation
 pipeline. This is what Render actually runs — without this, there's
 nothing for Render to bind to a port and serve.
 """
+from fastapi.responses import HTMLResponse
+from pathlib import Path
+
 
 import os
 import subprocess
@@ -20,9 +23,9 @@ from embed import embed_query
 app = FastAPI(title="Codebase Q&A Assistant")
 
 
-@app.get("/")
-def health():
-    return {"status": "ok"}
+@app.get("/", response_class=HTMLResponse)
+def home():
+    return Path("templates/index.html").read_text(encoding="utf-8")
 
 
 class IngestRequest(BaseModel):
