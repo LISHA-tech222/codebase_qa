@@ -12,6 +12,7 @@ import os
 import subprocess
 import psycopg2
 import pytest
+from dotenv import load_dotenv
 
 TEST_DB = "codeqa_test"
 TEST_DB_URL = f"postgresql+psycopg2://codeqa_user:devpassword@localhost:5432/{TEST_DB}"
@@ -21,45 +22,22 @@ DEMO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 @pytest.fixture(scope="session", autouse=True)
 def setup_test_database():
-    os.environ["PSYCOPG_DB_URL"] = TEST_DB_URL_PSYCOPG
-
-    # Superuser-only steps (CREATE DATABASE, CREATE EXTENSION) are run via
-    # `psql` as the postgres OS user (peer auth), matching how we've done
-    # this manually throughout the project — avoids fighting TCP superuser
-    # password auth from Python for something that's genuinely a one-time
-    # admin action, not app logic.
-    subprocess.run(
-        ["su", "postgres", "-c", f"psql -c 'DROP DATABASE IF EXISTS {TEST_DB};'"],
-        check=True, capture_output=True, text=True,
-    )
-    subprocess.run(
-        ["su", "postgres", "-c", f"psql -c 'CREATE DATABASE {TEST_DB} OWNER codeqa_user;'"],
-        check=True, capture_output=True, text=True,
-    )
-    subprocess.run(
-        ["su", "postgres", "-c", f"psql -d {TEST_DB} -c 'CREATE EXTENSION IF NOT EXISTS vector;'"],
-        check=True, capture_output=True, text=True,
-    )
-
-    env = os.environ.copy()
-    env["DATABASE_URL"] = TEST_DB_URL
-    result = subprocess.run(
-        ["alembic", "upgrade", "head"],
-        cwd=DEMO_ROOT,
-        env=env,
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode != 0:
-        raise RuntimeError(f"Migration failed:\n{result.stdout}\n{result.stderr}")
-
+    load_dotenv(override=True)
+    os.environ["PSYCOPG_DB_URL"] = os.environ["DATABASE_URL"]
     yield
+    # cleanup: remove any rows tests created, so they don't pollute real data
+    conn = psycopg2.connect(os.environ["DATABASE_URL"])
+    cur = conn.cursor()
+    cur.execute("DELETE FROM chunks WHERE repo_id = 'test_repo'")
+    conn.commit()
+    cur.close()
+    conn.close()
 
 
 @pytest.fixture
 def db_conn():
     """A connection wrapped in a transaction that's rolled back after the test."""
-    conn = psycopg2.connect(TEST_DB_URL_PSYCOPG)
+    conn = psycopg2.connect(os.environ["DATABASE_URL"])
     yield conn
     conn.rollback()
     conn.close()
