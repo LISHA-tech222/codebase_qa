@@ -10,3 +10,4 @@ venv/
 
 # Local scratch clones used for testing against a real repo
 /scratch-repos/
+revision
