@@ -10,6 +10,7 @@ A production-ready RAG application that ingests Python repositories, retrieves r
 [![pgvector](https://img.shields.io/badge/pgvector-vector%20search-336791)](https://github.com/pgvector/pgvector)
 [![Docker](https://img.shields.io/badge/Docker-deployed-2496ED?logo=docker&logoColor=white)](https://www.docker.com/)
 [![Render](https://img.shields.io/badge/Render-production-46E3B7?logo=render&logoColor=white)](https://render.com/)
+[![AWS](https://img.shields.io/badge/AWS-EC2%20%2B%20RDS-FF9900?logo=amazonaws&logoColor=white)](https://aws.amazon.com/)
 
 ---
 
@@ -263,9 +264,10 @@ The application therefore validates citations against the retrieved source rathe
 | Frontend | HTML/CSS/JavaScript |
 | Containerization | Docker |
 | CI | GitHub Actions |
-| Deployment | Render |
+| Deployment (production) | Render |
+| Deployment (infra exercise) | AWS EC2 + RDS |
 
-FastAPI provides the API layer and automatic interactive API documentation; pgvector provides vector similarity search inside PostgreSQL. citeturn0search8turn0search0
+FastAPI provides the API layer and automatic interactive API documentation; pgvector provides vector similarity search inside PostgreSQL. citeturn0search8turn0search0
 
 ---
 
@@ -277,7 +279,7 @@ codebase_assistant/
 ├── app.py                    # FastAPI API + web UI entry point
 ├── ingest.py                 # Repository ingestion pipeline
 ├── retrieval.py              # Hybrid retrieval + RRF
-├── generate.py               # Groq LLM generation
+├── generate.py                # Groq LLM generation
 ├── embed.py                  # Production embeddings
 ├── embed_stub.py             # Deterministic test embeddings
 ├── chunker.py                # AST-based code chunking
@@ -370,7 +372,7 @@ Interactive API documentation:
 http://127.0.0.1:8000/docs
 ```
 
-FastAPI provides automatic interactive API documentation at `/docs`. citeturn0search8turn0search4
+FastAPI provides automatic interactive API documentation at `/docs`. citeturn0search8turn0search4
 
 ---
 
@@ -534,9 +536,31 @@ skipped: 0
 failed: 0
 ```
 
+### RDS credentials setup defaulted to a paid option
+
+During AWS migration, "Managed in AWS Secrets Manager" was the pre-selected credentials method for RDS, which incurs an ongoing per-secret charge outside free tier.
+
+**Solution:** switched to self-managed credentials before creating the database; RDS Proxy (which has the same Secrets Manager dependency) was left disabled for the same reason.
+
+### `pg_restore` errors that looked like a failed migration but weren't
+
+A `pg_restore` run against RDS returned a list of "already exists" and "duplicate key" errors, which initially looked like a broken restore.
+
+**Root cause:** the restore had already completed successfully on an earlier run — every error was a duplicate-object/duplicate-key error, which only occurs when the schema and data are already present.
+
+**Solution:** verified the actual state directly with `\dt` and row counts against the known source count, rather than trusting the error list at face value.
+
+### `pgvector` extension not enabled by default on RDS
+
+A fresh RDS PostgreSQL instance does not have `pgvector` enabled, and restoring a schema with `vector`-typed columns fails without it.
+
+**Solution:** ran `CREATE EXTENSION IF NOT EXISTS vector;` on the target database before restoring.
+
 ---
 
 ## ☁️ Deployment
+
+### Production — Render
 
 The application is containerized with Docker and deployed on Render through the GitHub repository.
 
@@ -564,6 +588,26 @@ The production repository ingestion successfully stored:
 ```
 
 followed by a successful `/ask` request.
+
+### Infrastructure exercise — AWS (EC2 + RDS)
+
+Separately from the always-on Render deployment, the same application was deployed to AWS to build hands-on experience with core AWS services named in target job descriptions. This was a deliberate, scoped exercise — not a second production environment — and was torn down after verification and documentation to avoid ongoing cost.
+
+**Stack used:**
+
+- **EC2** (`t3.micro`, Ubuntu 22.04) running the existing Docker image directly (`docker build` + `docker run --restart unless-stopped`) — no docker-compose, since this project deploys from a single Dockerfile
+- **RDS PostgreSQL** (16.14, pgvector-enabled via `CREATE EXTENSION vector`), data migrated from Neon using `pg_dump` / `pg_restore` with `--no-owner --no-privileges`
+- **VPC security groups**: RDS was not publicly accessible; its inbound rule referenced the EC2 instance's security group directly (SG-to-SG), rather than an IP range
+- **Elastic IP** allocated so the demo URL stayed stable across the exercise
+- **IAM**: dedicated IAM user for console access (not root), MFA on root, budget/cost alerting configured
+
+**Why RDS instead of just keeping Neon:** RDS is explicitly named in target job descriptions, and the VPC/security-group configuration work is itself the transferable skill being demonstrated — not just a connection-string swap.
+
+**Why EC2 instead of ECS/Fargate:** Fargate has no free-tier allowance and bills per vCPU-second immediately; a single EC2 instance running the existing image demonstrates the same containerized-deployment skill without that cost.
+
+**Why SG-to-SG instead of IP-based rules:** EC2's traffic to RDS originates from its security-group identity inside the VPC, not from an externally visible IP — referencing the security group directly is both the correct pattern and more secure than any IP allowlist.
+
+This exercise is documented in detail, including the full debugging log, in `PROJECT_RECORD.md` / `BUGLOG.md`.
 
 ---
 
@@ -631,6 +675,11 @@ The GitHub repository URL is passed to Git as an argument rather than being inte
 - Rate limiting.
 - More strict repository URL validation.
 
+### Infrastructure
+
+- Re-run the AWS exercise with CI/CD deploying to EC2 (GitHub Actions → ECR → SSH deploy).
+- Add basic Terraform for the EC2/RDS/security-group resources used in the AWS exercise.
+
 ---
 
 ## 💼 Why This Project Is Interesting
@@ -651,7 +700,7 @@ It demonstrates:
 - **REST API development**
 - **Docker containerization**
 - **CI/CD**
-- **cloud deployment**
+- **cloud deployment (Render + AWS EC2/RDS)**
 - **frontend/backend integration**
 - **debugging production failures**
 
@@ -663,7 +712,7 @@ That makes the project an example of engineering based on observed system behavi
 
 ## 🎯 Interview Summary
 
-> **Codebase Q&A Assistant** is a production-deployed RAG system for querying Python repositories. I built AST-based chunking to preserve semantic code structures, generated 384-dimensional FastEmbed embeddings, and stored them in PostgreSQL with pgvector. I implemented hybrid retrieval combining exact symbol matching with semantic vector search and RRF, then pinned exact matches after testing showed pure RRF could produce incorrect rankings. Retrieved source is passed to a Groq-hosted LLM, and citations are validated against the actual retrieved chunks. The application is exposed through FastAPI, containerized with Docker, tested with GitHub Actions, deployed on Render, and includes a custom browser UI.
+> **Codebase Q&A Assistant** is a production-deployed RAG system for querying Python repositories. I built AST-based chunking to preserve semantic code structures, generated 384-dimensional FastEmbed embeddings, and stored them in PostgreSQL with pgvector. I implemented hybrid retrieval combining exact symbol matching with semantic vector search and RRF, then pinned exact matches after testing showed pure RRF could produce incorrect rankings. Retrieved source is passed to a Groq-hosted LLM, and citations are validated against the actual retrieved chunks. The application is exposed through FastAPI, containerized with Docker, tested with GitHub Actions, deployed on Render, and includes a custom browser UI. Separately, I deployed the same application to AWS (EC2 + RDS, with RDS locked down via security-group-to-security-group referencing rather than IP allowlisting) as a scoped infrastructure exercise to close the AWS/DevOps gap in target job descriptions.
 
 ---
 
@@ -678,8 +727,8 @@ For the detailed engineering history, see:
 
 ## 📚 References
 
-- [FastAPI documentation](https://fastapi.tiangolo.com/) — API framework and interactive API documentation. citeturn0search8
-- [pgvector](https://github.com/pgvector/pgvector) — PostgreSQL vector similarity search. citeturn0search0
+- [FastAPI documentation](https://fastapi.tiangolo.com/) — API framework and interactive API documentation. citeturn0search8
+- [pgvector](https://github.com/pgvector/pgvector) — PostgreSQL vector similarity search. citeturn0search0
 
 ---
 
