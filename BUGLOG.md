@@ -168,7 +168,7 @@ Format: what broke → what I assumed was wrong → what was actually wrong → 
       engine lifetime. Verified: ran test_retrieval.py alone (passed), then the
       full suite together (16/17 passed, one pre-existing sandbox-only failure
       unrelated to this).
-15. **asyncpg couldn't infer parameter type in `$2 IS NULL OR repo_id = $2` pattern**
+13. **asyncpg couldn't infer parameter type in `$2 IS NULL OR repo_id = $2` pattern**
     → assumed a plain `:repo_id IS NULL OR repo_id = :repo_id` clause would work
       the same way it does in psycopg2/plain SQL
     → actually asyncpg's prepared-statement protocol requires it can determine
@@ -177,7 +177,7 @@ Format: what broke → what I assumed was wrong → what was actually wrong → 
     → attempted fix: `:repo_id::text` inline cast — this created bug #16 below,
       so not the final fix
 
-16. **SQLAlchemy's text() bind-param parser silently truncated `:repo_id::text`**
+14. **SQLAlchemy's text() bind-param parser silently truncated `:repo_id::text`**
     → assumed `:paramname::pgtype` (Postgres cast syntax) would parse the same
       as any other `:paramname` reference
     → actually SQLAlchemy's bind-param regex in text() mis-parsed the name
@@ -192,3 +192,18 @@ Format: what broke → what I assumed was wrong → what was actually wrong → 
       an identical symbol name (repo_a and repo_b both have a `reset_all`,
       different bodies) to prove repo_id genuinely isolates results and
       repo_id=None still returns both, unchanged.
+
+15. **FastMCP was renamed/removed in mcp 2.x**
+    → assumed `from mcp.server.fastmcp import FastMCP` (the widely-known
+      v1 API) would work with whatever mcp version installs today
+    → actually mcp 2.x renamed it to MCPServer and moved the import path
+      (mcp.server.mcpserver.MCPServer) — the old import raises a
+      ModuleNotFoundError with an explicit migration pointer, not a
+      silent failure
+    → fixed by inspecting the actually-installed version (2.1.1) and its
+      real API via inspect.signature() before writing any server code,
+      rather than assuming the v1 API from training data. Verified the
+      full tool-call path (initialize -> list_tools -> call_tool) through
+      an actual in-memory MCP client/server session, not just an import
+      check — including confirming repo_id scoping holds through the real
+      protocol layer, not just the underlying function.
