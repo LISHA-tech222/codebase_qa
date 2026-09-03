@@ -18,19 +18,20 @@ Why RRF over "exact always wins" or "weighted score blend":
   cosine similarity and "match tier" are different units. RRF sidesteps
   this because it only cares about RANK POSITION within each list, not
   the raw score magnitude — so no scale-matching is needed.
+
+Step 0 (async rework): DB access now goes through async SQLAlchemy Core
+(db.py's engine), not psycopg2. RRF merge itself is pure Python/CPU —
+no I/O, so it stays a plain sync function called from async code.
 """
 
-import os
-import psycopg2
+from sqlalchemy import text
 
-from dotenv import load_dotenv 
-load_dotenv(override=True)
+from db import async_session
 
-DB_URL = os.environ["DATABASE_URL"]
 RRF_K = 60
 
 
-def _exact_match_search(cur, query: str, limit: int = 20):
+async def _exact_match_search(session, query: str, limit: int = 20) -> list[int]:
     """
     Tiered keyword/symbol-name match:
       tier 1: exact symbol name match
@@ -39,38 +40,38 @@ def _exact_match_search(cur, query: str, limit: int = 20):
       tier 4: query appears in content (fallback keyword search)
     Returns list of chunk ids in rank order (tier, then symbol_name).
     """
-    cur.execute(
-        """
-        SELECT id,
-            CASE
-                WHEN symbol_name = %(q)s THEN 1
-                WHEN symbol_name ILIKE %(q)s || '%%' THEN 2
-                WHEN symbol_name ILIKE '%%' || %(q)s || '%%' THEN 3
-                ELSE 4
-            END AS tier
-        FROM chunks
-        WHERE symbol_name ILIKE '%%' || %(q)s || '%%'
-           OR content ILIKE '%%' || %(q)s || '%%'
-        ORDER BY tier, symbol_name
-        LIMIT %(limit)s
-        """,
+    result = await session.execute(
+        text("""
+            SELECT id,
+                CASE
+                    WHEN symbol_name = :q THEN 1
+                    WHEN symbol_name ILIKE :q || '%' THEN 2
+                    WHEN symbol_name ILIKE '%' || :q || '%' THEN 3
+                    ELSE 4
+                END AS tier
+            FROM chunks
+            WHERE symbol_name ILIKE '%' || :q || '%'
+               OR content ILIKE '%' || :q || '%'
+            ORDER BY tier, symbol_name
+            LIMIT :limit
+        """),
         {"q": query, "limit": limit},
     )
-    return [row[0] for row in cur.fetchall()]  # already rank-ordered
+    return [row[0] for row in result.fetchall()]  # already rank-ordered
 
 
-def _semantic_search(cur, query_embedding: list[float], limit: int = 20):
+async def _semantic_search(session, query_embedding: list[float], limit: int = 20) -> list[int]:
     """Vector similarity search via pgvector cosine distance."""
-    cur.execute(
-        """
-        SELECT id
-        FROM chunks
-        ORDER BY embedding <=> %(emb)s::vector
-        LIMIT %(limit)s
-        """,
-        {"emb": query_embedding, "limit": limit},
+    result = await session.execute(
+        text("""
+            SELECT id
+            FROM chunks
+            ORDER BY embedding <=> (:emb)::vector
+            LIMIT :limit
+        """),
+        {"emb": str(query_embedding), "limit": limit},
     )
-    return [row[0] for row in cur.fetchall()]  # already rank-ordered
+    return [row[0] for row in result.fetchall()]  # already rank-ordered
 
 
 def _rrf_merge(*ranked_id_lists) -> list[int]:
@@ -82,7 +83,7 @@ def _rrf_merge(*ranked_id_lists) -> list[int]:
     return sorted(scores.keys(), key=lambda cid: -scores[cid])
 
 
-def hybrid_search(query: str, query_embedding: list[float], top_k: int = 10):
+async def hybrid_search(query: str, query_embedding: list[float], top_k: int = 10):
     """
     Tier-1 exact matches (symbol_name == query, case-insensitive) are
     pinned to the top of the results, ahead of everything else. This is
@@ -91,39 +92,34 @@ def hybrid_search(query: str, query_embedding: list[float], top_k: int = 10):
     similarity noise. Everything else (lower exact-match tiers + all
     semantic results) is merged below the pinned results via RRF.
     """
-    conn = psycopg2.connect(DB_URL)
-    cur = conn.cursor()
+    async with async_session() as session:
+        exact_ids = await _exact_match_search(session, query)
+        semantic_ids = await _semantic_search(session, query_embedding)
 
-    exact_ids = _exact_match_search(cur, query)
-    semantic_ids = _semantic_search(cur, query_embedding)
+        # Tier-1 pin: re-derive which ids were exact (case-insensitive) matches.
+        pinned_result = await session.execute(
+            text("SELECT id FROM chunks WHERE lower(symbol_name) = lower(:q)"),
+            {"q": query},
+        )
+        pinned_ids = [row[0] for row in pinned_result.fetchall()]
 
-    # Tier-1 pin: re-derive which ids were exact (case-insensitive) matches.
-    cur.execute(
-        "SELECT id FROM chunks WHERE lower(symbol_name) = lower(%s)", (query,)
-    )
-    pinned_ids = [row[0] for row in cur.fetchall()]
+        remaining_exact = [i for i in exact_ids if i not in pinned_ids]
+        merged_rest = _rrf_merge(remaining_exact, semantic_ids)
+        merged_rest = [i for i in merged_rest if i not in pinned_ids]
 
-    remaining_exact = [i for i in exact_ids if i not in pinned_ids]
-    merged_rest = _rrf_merge(remaining_exact, semantic_ids)
-    merged_rest = [i for i in merged_rest if i not in pinned_ids]
+        merged_ids = (pinned_ids + merged_rest)[:top_k]
 
-    merged_ids = (pinned_ids + merged_rest)[:top_k]
+        if not merged_ids:
+            return []
 
-    if not merged_ids:
-        cur.close()
-        conn.close()
-        return []
-
-    cur.execute(
-        """
-        SELECT id, file_path, symbol_name, symbol_type, start_line, end_line, docstring, content
-        FROM chunks WHERE id = ANY(%s)
-        """,
-        (merged_ids,),
-    )
-    rows = {row[0]: row for row in cur.fetchall()}
-    cur.close()
-    conn.close()
+        rows_result = await session.execute(
+            text("""
+                SELECT id, file_path, symbol_name, symbol_type, start_line, end_line, docstring, content
+                FROM chunks WHERE id = ANY(:ids)
+            """),
+            {"ids": merged_ids},
+        )
+        rows = {row[0]: row for row in rows_result.fetchall()}
 
     # preserve RRF rank order — the SQL ANY() query above doesn't guarantee it
     return [rows[cid] for cid in merged_ids if cid in rows]

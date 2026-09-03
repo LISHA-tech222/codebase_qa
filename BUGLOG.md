@@ -141,3 +141,16 @@ Format: what broke → what I assumed was wrong → what was actually wrong → 
   a stronger version of this app would visually distinguish cited vs.
   uncited sentences in the UI, not just clean up the text.
 
+11. **`asyncpg.connect()` rejected `sslmode` from the Neon connection string**
+    → assumed swapping the driver prefix (postgresql:// -> postgresql+asyncpg://)
+      was the only change needed to make DATABASE_URL work with asyncpg
+    → actually asyncpg doesn't accept `sslmode` as a URL query param or kwarg
+      at all — that's psycopg2/libpq-specific naming; asyncpg wants SSL
+      configured via a separate `ssl` connect arg
+    → fixed by parsing DATABASE_URL, stripping `sslmode` from the query
+      string, and passing connect_args={"ssl": True} to create_async_engine
+      when sslmode was require/verify-ca/verify-full. Verified against a
+      synthetic Neon-style URL (sslmode stripped, ssl=True set) and against
+      the real local DB (no sslmode present, no ssl arg forced) — both
+      paths tested, not just the happy path.
+

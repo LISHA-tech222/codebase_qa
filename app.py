@@ -8,7 +8,7 @@ from pathlib import Path
 
 
 import os
-import subprocess
+import asyncio
 import tempfile
 import shutil
 
@@ -34,17 +34,23 @@ class IngestRequest(BaseModel):
 
 
 @app.post("/ingest")
-def ingest_repo(req: IngestRequest):
+async def ingest_repo(req: IngestRequest):
     tmp_dir = tempfile.mkdtemp()
     try:
-        result = subprocess.run(
-            ["git", "clone", "--depth", "1", req.repo_url, tmp_dir],
-            capture_output=True, text=True, timeout=120,
+        proc = await asyncio.create_subprocess_exec(
+            "git", "clone", "--depth", "1", req.repo_url, tmp_dir,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
         )
-        if result.returncode != 0:
-            raise HTTPException(400, f"git clone failed: {result.stderr}")
+        try:
+            _, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
+        except asyncio.TimeoutError:
+            proc.kill()
+            raise HTTPException(400, "git clone timed out after 120s")
 
-        ingest(tmp_dir, req.repo_id)
+        if proc.returncode != 0:
+            raise HTTPException(400, f"git clone failed: {stderr.decode()}")
+
+        await ingest(tmp_dir, req.repo_id)
         return {"status": "ingested", "repo_id": req.repo_id}
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
@@ -56,9 +62,9 @@ class AskRequest(BaseModel):
 
 
 @app.post("/ask")
-def ask(req: AskRequest):
+async def ask(req: AskRequest):
     query_embedding = embed_query(req.question)
-    results = hybrid_search(req.question, query_embedding, top_k=req.top_k)
+    results = await hybrid_search(req.question, query_embedding, top_k=req.top_k)
 
     if not results:
         return {"answer": "No relevant code found for that question.", "sources": []}
@@ -74,7 +80,7 @@ def ask(req: AskRequest):
         for r in results
     ]
 
-    answer = answer_question(req.question, chunks)
+    answer = await answer_question(req.question, chunks)
     return {
         "answer": answer,
         "sources": [f"{c['file_path']}:{c['start_line']}-{c['end_line']}" for c in chunks],

@@ -7,7 +7,7 @@ Anthropic-adjacent chat completions interface.
 """
 
 import os
-from groq import Groq
+from groq import AsyncGroq
 
 MODEL = "openai/gpt-oss-20b"  # solid general-purpose free-tier model
 
@@ -41,11 +41,11 @@ def format_context(chunks: list[dict]) -> str:
     return "\n\n".join(blocks)
 
 
-def answer_question(question: str, chunks: list[dict]) -> str:
-    client = Groq(api_key=os.environ["GROQ_API_KEY"])
+async def answer_question(question: str, chunks: list[dict]) -> str:
+    client = AsyncGroq(api_key=os.environ["GROQ_API_KEY"])
     context = format_context(chunks)
 
-    response = client.chat.completions.create(
+    response = await client.chat.completions.create(
         model=MODEL,
         max_tokens=1000,
         messages=[
