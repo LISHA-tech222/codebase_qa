@@ -154,3 +154,17 @@ Format: what broke → what I assumed was wrong → what was actually wrong → 
       the real local DB (no sslmode present, no ssl arg forced) — both
       paths tested, not just the happy path.
 
+12. **pytest-asyncio's default per-test event loop broke db.py's module-level engine**
+    → assumed the existing test structure (one test function = one isolated unit)
+      would just work once test_retrieval.py's calls were made async
+    → actually pytest-asyncio creates a NEW event loop per test function by default,
+      but db.py's async engine (and its asyncpg connection pool) is a module-level
+      singleton created once at import — connections created under the first test's
+      event loop broke when reused under the next test's fresh loop:
+      "InterfaceError: cannot perform operation: another operation is in progress"
+    → fixed by pinning both asyncio_default_fixture_loop_scope and
+      asyncio_default_test_loop_scope to "session" in pytest.ini, so all async
+      tests share one event loop for the whole session — matching db.py's actual
+      engine lifetime. Verified: ran test_retrieval.py alone (passed), then the
+      full suite together (16/17 passed, one pre-existing sandbox-only failure
+      unrelated to this).

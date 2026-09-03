@@ -13,6 +13,7 @@ import subprocess
 import psycopg2
 import pytest
 from dotenv import load_dotenv
+import pytest_asyncio
 
 TEST_DB = "codeqa_test"
 TEST_DB_URL = f"postgresql+psycopg2://codeqa_user:devpassword@localhost:5432/{TEST_DB}"
@@ -41,3 +42,17 @@ def db_conn():
     yield conn
     conn.rollback()
     conn.close()
+
+@pytest_asyncio.fixture
+async def async_db_session():
+    """
+    Added for Step 0 (async rework): an async SQLAlchemy session for tests
+    that exercise retrieval.py's async functions directly. Uses the same
+    db.py engine the app itself uses, against the same DATABASE_URL as
+    db_conn above — so data seeded via the sync db_conn/psycopg2 fixture
+    (used for setup, since raw inserts are simpler there) is visible to
+    queries made through this async session, same underlying database.
+    """
+    from db import async_session as _async_session_factory
+    async with _async_session_factory() as session:
+        yield session
