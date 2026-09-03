@@ -168,3 +168,27 @@ Format: what broke → what I assumed was wrong → what was actually wrong → 
       engine lifetime. Verified: ran test_retrieval.py alone (passed), then the
       full suite together (16/17 passed, one pre-existing sandbox-only failure
       unrelated to this).
+15. **asyncpg couldn't infer parameter type in `$2 IS NULL OR repo_id = $2` pattern**
+    → assumed a plain `:repo_id IS NULL OR repo_id = :repo_id` clause would work
+      the same way it does in psycopg2/plain SQL
+    → actually asyncpg's prepared-statement protocol requires it can determine
+      each parameter's type from context, and couldn't infer one from `IS NULL`
+      alone even combined with the later `= :repo_id` comparison
+    → attempted fix: `:repo_id::text` inline cast — this created bug #16 below,
+      so not the final fix
+
+16. **SQLAlchemy's text() bind-param parser silently truncated `:repo_id::text`**
+    → assumed `:paramname::pgtype` (Postgres cast syntax) would parse the same
+      as any other `:paramname` reference
+    → actually SQLAlchemy's bind-param regex in text() mis-parsed the name
+      right up against `::`, registering the param as `repo_i` (one character
+      short) instead of `repo_id` — confirmed directly by inspecting
+      `text(...)._bindparams.keys()` in isolation before touching the real
+      query. The bind value was silently dropped; asyncpg then received the
+      literal, unparsed `::text` in the SQL and threw a syntax error.
+    → fixed by using `CAST(:repo_id AS text)` instead of `:repo_id::text` —
+      confirmed via the same isolated check that this parses correctly, then
+      re-verified against a live DB with two separately seeded repos sharing
+      an identical symbol name (repo_a and repo_b both have a `reset_all`,
+      different bodies) to prove repo_id genuinely isolates results and
+      repo_id=None still returns both, unchanged.

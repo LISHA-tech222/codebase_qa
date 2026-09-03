@@ -22,6 +22,11 @@ Why RRF over "exact always wins" or "weighted score blend":
 Step 0 (async rework): DB access now goes through async SQLAlchemy Core
 (db.py's engine), not psycopg2. RRF merge itself is pure Python/CPU —
 no I/O, so it stays a plain sync function called from async code.
+
+Step 1 prep (MCP): repo_id is now an optional filter across all three
+queries. Default None preserves the exact unfiltered behavior app.py's
+/ask route already relies on — app.py is untouched. The MCP tool
+(query_codebase) will pass a real repo_id to scope results to one repo.
 """
 
 from sqlalchemy import text
@@ -31,7 +36,7 @@ from db import async_session
 RRF_K = 60
 
 
-async def _exact_match_search(session, query: str, limit: int = 20) -> list[int]:
+async def _exact_match_search(session, query: str, repo_id: str | None = None, limit: int = 20) -> list[int]:
     """
     Tiered keyword/symbol-name match:
       tier 1: exact symbol name match
@@ -39,6 +44,8 @@ async def _exact_match_search(session, query: str, limit: int = 20) -> list[int]
       tier 3: symbol name contains query
       tier 4: query appears in content (fallback keyword search)
     Returns list of chunk ids in rank order (tier, then symbol_name).
+    repo_id=None means unfiltered (searches across all repos) — matches
+    the original behavior before repo_id filtering was added.
     """
     result = await session.execute(
         text("""
@@ -50,26 +57,27 @@ async def _exact_match_search(session, query: str, limit: int = 20) -> list[int]
                     ELSE 4
                 END AS tier
             FROM chunks
-            WHERE symbol_name ILIKE '%' || :q || '%'
-               OR content ILIKE '%' || :q || '%'
+            WHERE (symbol_name ILIKE '%' || :q || '%' OR content ILIKE '%' || :q || '%')
+              AND (CAST(:repo_id AS text) IS NULL OR repo_id = CAST(:repo_id AS text))
             ORDER BY tier, symbol_name
             LIMIT :limit
         """),
-        {"q": query, "limit": limit},
+        {"q": query, "repo_id": repo_id, "limit": limit},
     )
     return [row[0] for row in result.fetchall()]  # already rank-ordered
 
 
-async def _semantic_search(session, query_embedding: list[float], limit: int = 20) -> list[int]:
+async def _semantic_search(session, query_embedding: list[float], repo_id: str | None = None, limit: int = 20) -> list[int]:
     """Vector similarity search via pgvector cosine distance."""
     result = await session.execute(
         text("""
             SELECT id
             FROM chunks
+            WHERE (CAST(:repo_id AS text) IS NULL OR repo_id = CAST(:repo_id AS text))
             ORDER BY embedding <=> (:emb)::vector
             LIMIT :limit
         """),
-        {"emb": str(query_embedding), "limit": limit},
+        {"emb": str(query_embedding), "repo_id": repo_id, "limit": limit},
     )
     return [row[0] for row in result.fetchall()]  # already rank-ordered
 
@@ -83,7 +91,7 @@ def _rrf_merge(*ranked_id_lists) -> list[int]:
     return sorted(scores.keys(), key=lambda cid: -scores[cid])
 
 
-async def hybrid_search(query: str, query_embedding: list[float], top_k: int = 10):
+async def hybrid_search(query: str, query_embedding: list[float], repo_id: str | None = None, top_k: int = 10):
     """
     Tier-1 exact matches (symbol_name == query, case-insensitive) are
     pinned to the top of the results, ahead of everything else. This is
@@ -91,15 +99,23 @@ async def hybrid_search(query: str, query_embedding: list[float], top_k: int = 1
     that shouldn't be probabilistically outranked by "soft" semantic
     similarity noise. Everything else (lower exact-match tiers + all
     semantic results) is merged below the pinned results via RRF.
+
+    repo_id=None (default) searches across all ingested repos — this is
+    what app.py's /ask route uses today, unchanged. Pass a real repo_id
+    to scope every stage of retrieval to one repo (used by the MCP tool).
     """
     async with async_session() as session:
-        exact_ids = await _exact_match_search(session, query)
-        semantic_ids = await _semantic_search(session, query_embedding)
+        exact_ids = await _exact_match_search(session, query, repo_id=repo_id)
+        semantic_ids = await _semantic_search(session, query_embedding, repo_id=repo_id)
 
         # Tier-1 pin: re-derive which ids were exact (case-insensitive) matches.
         pinned_result = await session.execute(
-            text("SELECT id FROM chunks WHERE lower(symbol_name) = lower(:q)"),
-            {"q": query},
+            text("""
+                SELECT id FROM chunks
+                WHERE lower(symbol_name) = lower(:q)
+                  AND (CAST(:repo_id AS text) IS NULL OR repo_id = CAST(:repo_id AS text))
+            """),
+            {"q": query, "repo_id": repo_id},
         )
         pinned_ids = [row[0] for row in pinned_result.fetchall()]
 
