@@ -92,6 +92,8 @@ Citations are checked against the chunks that were actually retrieved instead of
                       Web UI
 ```
 
+The retrieval layer above is also exposed directly as an MCP tool (`query_codebase`), so any MCP-compatible client — not just this web UI — can query the same hybrid search without going through the LLM-generation step. See [MCP Tool](#-mcp-tool) below.
+
 ---
 
 ## 🔍 RAG Pipeline
@@ -126,7 +128,7 @@ The model is lazily loaded and reused.
 
 ### 3. Storage
 
-Chunks and embeddings are stored in PostgreSQL with pgvector.
+Chunks and embeddings are stored in PostgreSQL with pgvector, queried through async SQLAlchemy Core (`db.py`) and the asyncpg driver.
 
 The project uses a repository-aware uniqueness constraint based on:
 
@@ -152,12 +154,14 @@ The remaining candidates are merged using **Reciprocal Rank Fusion (RRF)** with:
 k = 60
 ```
 
+Retrieval can optionally be scoped to a single repository via `repo_id` (used by the MCP tool); the web UI's `/ask` endpoint leaves it unscoped, searching across all ingested repositories, matching its original behavior.
+
 ### 5. Generation
 
 The retrieved chunks are passed to:
 
 ```text
-Groq
+Groq (AsyncGroq)
 openai/gpt-oss-20b
 ```
 
@@ -168,6 +172,26 @@ The model generates an answer grounded in the retrieved source.
 Generated citations are checked against the actual retrieved chunks.
 
 A citation that does not correspond to retrieved source is removed rather than trusted.
+
+---
+
+## 🔌 MCP Tool
+
+The hybrid retrieval layer is also exposed as a standalone [Model Context Protocol](https://modelcontextprotocol.io/) server (`mcp_server.py`), independent of the FastAPI app — it imports the same service layer (`retrieval.py`, `embed.py`) but does not touch `app.py` or any existing route.
+
+**Tool:** `query_codebase(query: str, repo_id: str, top_k: int = 5) -> list[ValidatedChunk]`
+
+- **Transport:** stdio
+- **Single tool, no resources**
+- Each returned chunk includes a `citation` field (`file_path:start_line-end_line`) built directly from its own database row — valid by construction, since this tool performs no LLM call to validate against.
+
+Verified against three independent MCP clients: an in-process protocol test (`mcp.shared.memory` + `ClientSession`), the official [MCP Inspector](https://github.com/modelcontextprotocol/inspector), and Claude Desktop (via `mcpServers` in `claude_desktop_config.json`) against the live production database.
+
+**Run it:**
+
+```bash
+python mcp_server.py
+```
 
 ---
 
@@ -245,6 +269,14 @@ An LLM can produce a plausible-looking citation that was never retrieved.
 
 The application therefore validates citations against the retrieved source rather than trusting the model's output.
 
+### Async I/O, not async everything
+
+Database queries and the Groq LLM call are I/O-bound, so they were converted to async (asyncpg/async SQLAlchemy, `AsyncGroq`). Embedding inference (FastEmbed) and AST parsing are CPU-bound — wrapping them in `async def` would add complexity with zero benefit, since `asyncio` concurrency only helps work that's waiting on I/O. They stayed plain sync calls, invoked inline.
+
+### What "citation-validated" means with no LLM call inside a tool
+
+`validate_citations.py` checks an LLM's *generated answer* against retrieved chunks — it has nothing to check inside a pure-retrieval MCP tool. Rather than calling the LLM inside `query_codebase` itself (which would duplicate `/ask` and add latency/cost to every tool call), each returned chunk's citation is built directly from its own database row, making it valid by construction.
+
 ---
 
 ## 🛠️ Tech Stack
@@ -252,15 +284,17 @@ The application therefore validates citations against the retrieved source rathe
 | Layer | Technology |
 |---|---|
 | Language | Python 3.11 |
-| API | FastAPI |
+| API | FastAPI (async) |
 | Server | Uvicorn |
+| Database access | async SQLAlchemy Core + asyncpg |
 | Parsing | Python AST |
 | Embeddings | FastEmbed / BAAI/bge-small-en-v1.5 |
 | Vector dimension | 384 |
 | Database | PostgreSQL |
 | Vector search | pgvector |
 | Migrations | Alembic |
-| LLM | Groq / openai/gpt-oss-20b |
+| LLM | Groq (AsyncGroq) / openai/gpt-oss-20b |
+| Tool protocol | MCP (Model Context Protocol) |
 | Frontend | HTML/CSS/JavaScript |
 | Containerization | Docker |
 | CI | GitHub Actions |
@@ -276,25 +310,28 @@ FastAPI provides the API layer and automatic interactive API documentation; pgve
 ```text
 codebase_assistant/
 │
-├── app.py                    # FastAPI API + web UI entry point
-├── ingest.py                 # Repository ingestion pipeline
-├── retrieval.py              # Hybrid retrieval + RRF
-├── generate.py                # Groq LLM generation
-├── embed.py                  # Production embeddings
-├── embed_stub.py             # Deterministic test embeddings
-├── chunker.py                # AST-based code chunking
-├── run_on_repo.py            # Python file discovery
-├── validate_citations.py     # Citation validation
+├── app.py                    # FastAPI API + web UI entry point (async routes)
+├── db.py                     # Async SQLAlchemy engine/session (shared by retrieval.py, ingest.py)
+├── mcp_server.py              # MCP server exposing query_codebase as a standalone tool
+├── ingest.py                  # Repository ingestion pipeline (async DB inserts)
+├── retrieval.py               # Hybrid retrieval + RRF (async, optional repo_id scoping)
+├── generate.py                 # Groq LLM generation (AsyncGroq)
+├── embed.py                   # Production embeddings
+├── embed_stub.py              # Deterministic test embeddings
+├── chunker.py                 # AST-based code chunking
+├── run_on_repo.py              # Python file discovery
+├── validate_citations.py       # Citation validation
 │
 ├── templates/
-│   └── index.html            # Browser UI
+│   └── index.html             # Browser UI
 │
-├── alembic/                  # Database migrations
-├── tests/                    # Automated tests
+├── alembic/                   # Database migrations
+├── tests/                      # Automated tests (pytest-asyncio for the async retrieval layer)
+├── pytest.ini                 # asyncio_mode + session-scoped event loop config
 │
 ├── .github/
 │   └── workflows/
-│       └── test.yml          # CI pipeline
+│       └── test.yml            # CI pipeline
 │
 ├── Dockerfile
 ├── .dockerignore
@@ -473,7 +510,7 @@ Alembic migration
 pytest
 ```
 
-Tests use deterministic stub embeddings so CI does not depend on downloading the production FastEmbed model.
+Tests use deterministic stub embeddings so CI does not depend on downloading the production FastEmbed model. The async retrieval tests use `pytest-asyncio` with a session-scoped event loop, matching the lifetime of `db.py`'s module-level async engine.
 
 ---
 
@@ -556,6 +593,24 @@ A fresh RDS PostgreSQL instance does not have `pgvector` enabled, and restoring 
 
 **Solution:** ran `CREATE EXTENSION IF NOT EXISTS vector;` on the target database before restoring.
 
+### asyncpg rejected the `sslmode` connection-string parameter
+
+Converting the DB layer to async (asyncpg/SQLAlchemy), the real Neon `DATABASE_URL` includes `?sslmode=require` — a psycopg2/libpq-specific parameter name asyncpg doesn't accept at all.
+
+**Solution:** parse `DATABASE_URL` in `db.py`, strip `sslmode` from the query string, and translate it into `connect_args={"ssl": True}` for `create_async_engine`. Found only against the real production database — the local test DB (no SSL requirement) didn't surface it.
+
+### mcp 2.x renamed `FastMCP` to `MCPServer`
+
+The commonly-documented `from mcp.server.fastmcp import FastMCP` import fails on the currently-installed SDK version, with an explicit migration message pointing to the renamed `mcp.server.mcpserver.MCPServer`.
+
+**Solution:** inspected the actually-installed SDK version and its real API via `inspect.signature()` before writing any server code, rather than assuming an older API shape from memory.
+
+### SQLAlchemy's `text()` mis-parsed a Postgres cast in a bind parameter
+
+Adding `repo_id` filtering, a `:repo_id::text` inline cast silently truncated the bound parameter name to `repo_i`, dropping the value entirely and causing a raw SQL syntax error downstream in asyncpg.
+
+**Solution:** confirmed the truncation directly by inspecting `text(...)._bindparams.keys()` in isolation, then switched to `CAST(:repo_id AS text)`, which parses correctly.
+
 ---
 
 ## ☁️ Deployment
@@ -626,7 +681,7 @@ The GitHub repository URL is passed to Git as an argument rather than being inte
 ## ⚠️ Known Limitations
 
 - **Python only:** multi-language parsing is not implemented yet.
-- **Synchronous ingestion:** large repositories can make `/ingest` take a long time.
+- **Synchronous ingestion architecture:** `/ingest` still holds the HTTP request open for the full clone + chunk + embed + insert pipeline, even though the individual DB/LLM calls inside it are now async — this is a request/response architecture limitation, not an I/O-blocking one. A background-job/status-endpoint design would address it separately.
 - **Module citations:** synthetic module chunks may have approximate line ranges.
 - **Citation UX:** invalid citation tags are removed, but the unsupported claim itself can remain.
 - **Repository size:** very large repositories may require incremental indexing or background jobs.
@@ -680,6 +735,12 @@ The GitHub repository URL is passed to Git as an argument rather than being inte
 - Re-run the AWS exercise with CI/CD deploying to EC2 (GitHub Actions → ECR → SSH deploy).
 - Add basic Terraform for the EC2/RDS/security-group resources used in the AWS exercise.
 
+### Model integrations
+
+- AWS Bedrock as an alternate/additional LLM provider alongside Groq.
+- Langfuse tracing for prompts/retrievals/outputs.
+- LangGraph, if the actual control flow shows real branching/routing worth modeling as a graph.
+
 ---
 
 ## 💼 Why This Project Is Interesting
@@ -698,6 +759,8 @@ It demonstrates:
 - **PostgreSQL schema design**
 - **database migrations**
 - **REST API development**
+- **async Python (asyncio, async SQLAlchemy/asyncpg)**
+- **Model Context Protocol (MCP) server implementation**
 - **Docker containerization**
 - **CI/CD**
 - **cloud deployment (Render + AWS EC2/RDS)**
@@ -712,7 +775,7 @@ That makes the project an example of engineering based on observed system behavi
 
 ## 🎯 Interview Summary
 
-> **Codebase Q&A Assistant** is a production-deployed RAG system for querying Python repositories. I built AST-based chunking to preserve semantic code structures, generated 384-dimensional FastEmbed embeddings, and stored them in PostgreSQL with pgvector. I implemented hybrid retrieval combining exact symbol matching with semantic vector search and RRF, then pinned exact matches after testing showed pure RRF could produce incorrect rankings. Retrieved source is passed to a Groq-hosted LLM, and citations are validated against the actual retrieved chunks. The application is exposed through FastAPI, containerized with Docker, tested with GitHub Actions, deployed on Render, and includes a custom browser UI. Separately, I deployed the same application to AWS (EC2 + RDS, with RDS locked down via security-group-to-security-group referencing rather than IP allowlisting) as a scoped infrastructure exercise to close the AWS/DevOps gap in target job descriptions.
+> **Codebase Q&A Assistant** is a production-deployed RAG system for querying Python repositories. I built AST-based chunking to preserve semantic code structures, generated 384-dimensional FastEmbed embeddings, and stored them in PostgreSQL with pgvector. I implemented hybrid retrieval combining exact symbol matching with semantic vector search and RRF, then pinned exact matches after testing showed pure RRF could produce incorrect rankings. Retrieved source is passed to a Groq-hosted LLM, and citations are validated against the actual retrieved chunks. I later converted the DB and LLM layers to async (asyncpg/async SQLAlchemy, AsyncGroq), correctly distinguishing I/O-bound calls worth converting from CPU-bound work that async wouldn't help, and wrapped the retrieval layer as an MCP tool so it's usable by any MCP-compatible client, verified against three independent MCP clients including Claude Desktop. The application is exposed through FastAPI, containerized with Docker, tested with GitHub Actions, deployed on Render, and includes a custom browser UI. Separately, I deployed the same application to AWS (EC2 + RDS, with RDS locked down via security-group-to-security-group referencing rather than IP allowlisting) as a scoped infrastructure exercise to close the AWS/DevOps gap in target job descriptions.
 
 ---
 
@@ -729,6 +792,7 @@ For the detailed engineering history, see:
 
 - [FastAPI documentation](https://fastapi.tiangolo.com/) — API framework and interactive API documentation. citeturn0search8
 - [pgvector](https://github.com/pgvector/pgvector) — PostgreSQL vector similarity search. citeturn0search0
+- [Model Context Protocol](https://modelcontextprotocol.io/) — open protocol for connecting LLM applications to external tools and data sources.
 
 ---
 

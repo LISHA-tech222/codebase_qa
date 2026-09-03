@@ -207,3 +207,17 @@ Format: what broke → what I assumed was wrong → what was actually wrong → 
       an actual in-memory MCP client/server session, not just an import
       check — including confirming repo_id scoping holds through the real
       protocol layer, not just the underlying function.
+
+16. **Claude Desktop: initial "config file" pasted for editing had no `mcpServers` key at all**
+    → assumed the file shown was either the wrong file (a known Windows MSIX
+      redirection bug in Claude Desktop's "Edit Config" button was initially
+      suspected) or an outdated config format
+    → actually it was the correct, current claude_desktop_config.json at the
+      standard path (%APPDATA%\Claude\claude_desktop_config.json) — it simply
+      hadn't had an mcpServers key added yet on this install. A working config
+      from another setup confirmed the plain command/args/env structure is
+      still correct for local stdio servers
+    → fixed by adding an mcpServers.codebase-qa block (DATABASE_URL in env) to
+      the existing file, fully restarting Claude Desktop via system tray —
+      confirmed working, tool appeared in the tools list and returned correct
+      results against the real Neon DB
