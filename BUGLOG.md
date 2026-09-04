@@ -221,3 +221,56 @@ Format: what broke → what I assumed was wrong → what was actually wrong → 
       the existing file, fully restarting Claude Desktop via system tray —
       confirmed working, tool appeared in the tools list and returned correct
       results against the real Neon DB
+
+17. **Verified asyncio.to_thread() genuinely doesn't block the event loop, before relying on it**
+    → this needed proof, not assumption, before using it for the Bedrock call
+    → ran a 1-second blocking sync call via asyncio.to_thread() concurrently
+      with an async task printing ticks every 0.2s — confirmed the async task
+      kept running uninterrupted (5 ticks completed) and total wall time was
+      ~1.0s (concurrent), not ~2.0s (sequential) — proving the offload is real,
+      not just correctly-shaped code
+
+18. **Verified converse() request/response shape via botocore's service model, not memory**
+    → rather than assume AWS's exact field names (modelId, messages, system,
+      inferenceConfig) and response structure from training data, inspected
+      client.meta.service_model.operation_model('Converse') directly to get
+      the real required/optional fields and nested shapes before writing any
+      request-building code — confirmed messages[].content[].text, system[].text,
+      inferenceConfig.maxTokens, and response.output.message.content[0].text
+      all match what was actually implemented
+
+19. **TestClient event-loop artifact when chaining two .post() calls in one script**
+    → not a code bug in app.py/generate.py — a testing artifact. TestClient
+      created a fresh event loop portal for a second .post() call in the same
+      script, while db.py's module-level async engine was still bound to the
+      first call's loop (same root cause class as bug #14). Confirmed this by
+      re-running each provider test alone, in its own process — both passed
+      cleanly in isolation. Doesn't affect the real app: uvicorn runs one
+      continuous event loop for the server's whole lifetime, so this exact
+      failure mode can't occur in production, only in throwaway multi-call
+      test scripts
+
+20. **Full request/response/citation-validation path verified end-to-end with a mocked boto3 client**
+    → couldn't test a live AWS call yet (see #21), so didn't skip verification
+      entirely — mocked boto3.client to run the real code path: request
+      assembly (modelId, system, messages, inferenceConfig), response parsing
+      (output.message.content[0].text), and citation validation (real citation
+      kept, fabricated one stripped) all confirmed working together, plus the
+      same test run through the actual FastAPI route (TestClient) to confirm
+      provider="bedrock" reaches _answer_bedrock correctly and provider
+      omitted still reaches Groq exactly as before Step 2
+
+21. **AWS Bedrock: no live call made yet — new AWS account pending verification, not a code issue**
+    → this is a genuine "not yet done," not glossed over: everything up to
+      the real AWS network boundary is tested (see #17, #18, #20), but an
+      actual converse() call against real AWS has not succeeded yet because
+      account verification hasn't completed
+    → once verified: still need to explicitly enable model access for the
+      target model in the Bedrock console (separate step from account
+      verification, no cost) before a real call will succeed
+    → deliberately NOT deploying AWS credentials to Render/production even
+      after local verification succeeds — /ask has no auth check, so live
+      AWS credentials on a public unauthenticated endpoint would be a real
+      billing exposure; local-only credentials mean the code path stays
+      genuine and demonstrable while the deployed app fails safely at $0
+      if ever hit

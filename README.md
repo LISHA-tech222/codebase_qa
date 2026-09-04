@@ -158,7 +158,7 @@ Retrieval can optionally be scoped to a single repository via `repo_id` (used by
 
 ### 5. Generation
 
-The retrieved chunks are passed to:
+By default, the retrieved chunks are passed to:
 
 ```text
 Groq (AsyncGroq)
@@ -167,11 +167,33 @@ openai/gpt-oss-20b
 
 The model generates an answer grounded in the retrieved source.
 
+AWS Bedrock is also supported as an alternate provider, selectable per-request (`"provider": "bedrock"` in the `/ask` request body) via Bedrock's unified `converse()` API — see [LLM Providers](#-llm-providers) below. Groq stays the default and the actual deployment path.
+
 ### 6. Citation validation
 
 Generated citations are checked against the actual retrieved chunks.
 
-A citation that does not correspond to retrieved source is removed rather than trusted.
+A citation that does not correspond to retrieved source is removed rather than trusted. The same validation runs regardless of which LLM provider generated the answer.
+
+---
+
+## 🔀 LLM Providers
+
+`/ask` supports two LLM providers, chosen per-request via an optional `provider` field (defaults to `"groq"` if omitted — existing callers are unaffected):
+
+```json
+{
+  "question": "How does the configuration parser work?",
+  "provider": "bedrock"
+}
+```
+
+- **`groq`** (default) — Groq's free tier, `openai/gpt-oss-20b`, via `AsyncGroq`. This is the actual production path.
+- **`bedrock`** — AWS Bedrock, via the unified `converse()` API (not the older, model-specific `invoke_model()` — one request shape works across Bedrock's model providers, so switching models is a config change). `boto3` has no official async client, so the call is offloaded with `asyncio.to_thread()` rather than awaited directly, to avoid blocking the event loop.
+
+**Status:** code-complete and verified against a mocked AWS client (request assembly, response parsing, and citation validation all confirmed working correctly together) — a live call against real AWS has not yet been made, pending AWS account verification completing. Documented honestly as pending rather than claimed as done; see `BUGLOG.md` #20–21.
+
+**Cost/security note:** AWS credentials are intentionally kept **local-only** (`.env`), not deployed to Render. `/ask` has no auth check, so live AWS credentials on a public endpoint would let anyone trigger real, repeated AWS charges. Without credentials in production, the Bedrock code path stays real and demonstrable, but fails safely at $0 cost if it's ever hit on the live deployment. A single local verification call is estimated at well under a cent (Claude 3 Haiku pricing; an even cheaper model, Amazon Nova Micro, is swappable via the `BEDROCK_MODEL_ID` env var with no code change).
 
 ---
 
@@ -293,7 +315,7 @@ Database queries and the Groq LLM call are I/O-bound, so they were converted to 
 | Database | PostgreSQL |
 | Vector search | pgvector |
 | Migrations | Alembic |
-| LLM | Groq (AsyncGroq) / openai/gpt-oss-20b |
+| LLM | Groq (AsyncGroq) / openai/gpt-oss-20b, default; AWS Bedrock (converse API) as alternate provider |
 | Tool protocol | MCP (Model Context Protocol) |
 | Frontend | HTML/CSS/JavaScript |
 | Containerization | Docker |
@@ -611,6 +633,18 @@ Adding `repo_id` filtering, a `:repo_id::text` inline cast silently truncated th
 
 **Solution:** confirmed the truncation directly by inspecting `text(...)._bindparams.keys()` in isolation, then switched to `CAST(:repo_id AS text)`, which parses correctly.
 
+### Verifying `asyncio.to_thread()` actually offloads, before relying on it for Bedrock
+
+`boto3` has no official async client, and calling it directly from an `async def` route would block the event loop — but rather than assume `asyncio.to_thread()` solves that, it needed proof.
+
+**Solution:** ran a 1-second blocking sync call via `asyncio.to_thread()` concurrently with an async task printing ticks every 0.2s. The async task completed all 5 ticks uninterrupted, and total wall time was ~1.0s (concurrent) rather than ~2.0s (sequential) — confirming the offload is real, not just correctly-shaped code.
+
+### AWS Bedrock live verification pending account activation
+
+The Bedrock integration is code-complete and verified against a mocked `boto3` client (request assembly via AWS's actual `Converse` service model, response parsing, citation validation all confirmed working together) — but a real call against live AWS hasn't been made yet, since the AWS account used for this is still going through verification.
+
+**Status:** documented honestly as pending rather than claimed as done. Once verified, model access still needs to be explicitly enabled for the target model in the Bedrock console before a real call succeeds — a separate, no-cost step from account activation.
+
 ---
 
 ## ☁️ Deployment
@@ -737,7 +771,7 @@ The GitHub repository URL is passed to Git as an argument rather than being inte
 
 ### Model integrations
 
-- AWS Bedrock as an alternate/additional LLM provider alongside Groq.
+- ~~AWS Bedrock as an alternate/additional LLM provider alongside Groq~~ — implemented; live verification pending AWS account activation (see [LLM Providers](#-llm-providers)).
 - Langfuse tracing for prompts/retrievals/outputs.
 - LangGraph, if the actual control flow shows real branching/routing worth modeling as a graph.
 
@@ -761,6 +795,7 @@ It demonstrates:
 - **REST API development**
 - **async Python (asyncio, async SQLAlchemy/asyncpg)**
 - **Model Context Protocol (MCP) server implementation**
+- **multi-provider LLM integration (Groq + AWS Bedrock)**
 - **Docker containerization**
 - **CI/CD**
 - **cloud deployment (Render + AWS EC2/RDS)**
@@ -775,7 +810,7 @@ That makes the project an example of engineering based on observed system behavi
 
 ## 🎯 Interview Summary
 
-> **Codebase Q&A Assistant** is a production-deployed RAG system for querying Python repositories. I built AST-based chunking to preserve semantic code structures, generated 384-dimensional FastEmbed embeddings, and stored them in PostgreSQL with pgvector. I implemented hybrid retrieval combining exact symbol matching with semantic vector search and RRF, then pinned exact matches after testing showed pure RRF could produce incorrect rankings. Retrieved source is passed to a Groq-hosted LLM, and citations are validated against the actual retrieved chunks. I later converted the DB and LLM layers to async (asyncpg/async SQLAlchemy, AsyncGroq), correctly distinguishing I/O-bound calls worth converting from CPU-bound work that async wouldn't help, and wrapped the retrieval layer as an MCP tool so it's usable by any MCP-compatible client, verified against three independent MCP clients including Claude Desktop. The application is exposed through FastAPI, containerized with Docker, tested with GitHub Actions, deployed on Render, and includes a custom browser UI. Separately, I deployed the same application to AWS (EC2 + RDS, with RDS locked down via security-group-to-security-group referencing rather than IP allowlisting) as a scoped infrastructure exercise to close the AWS/DevOps gap in target job descriptions.
+> **Codebase Q&A Assistant** is a production-deployed RAG system for querying Python repositories. I built AST-based chunking to preserve semantic code structures, generated 384-dimensional FastEmbed embeddings, and stored them in PostgreSQL with pgvector. I implemented hybrid retrieval combining exact symbol matching with semantic vector search and RRF, then pinned exact matches after testing showed pure RRF could produce incorrect rankings. Retrieved source is passed to an LLM, and citations are validated against the actual retrieved chunks. I later converted the DB and LLM layers to async (asyncpg/async SQLAlchemy, AsyncGroq), correctly distinguishing I/O-bound calls worth converting from CPU-bound work that async wouldn't help; wrapped the retrieval layer as an MCP tool usable by any MCP-compatible client, verified against three independent MCP clients including Claude Desktop; and added AWS Bedrock as a second, per-request-selectable LLM provider alongside Groq, using Bedrock's unified `converse()` API and correctly offloading its sync-only client with `asyncio.to_thread()`. The Bedrock path is code-complete and verified against a mocked AWS client — live verification is honestly still pending AWS account activation, and I deliberately kept AWS credentials out of the public production deployment for cost/security reasons rather than risk exposing a billing surface on an unauthenticated endpoint. The application is exposed through FastAPI, containerized with Docker, tested with GitHub Actions, deployed on Render, and includes a custom browser UI. Separately, I deployed the same application to AWS (EC2 + RDS, with RDS locked down via security-group-to-security-group referencing rather than IP allowlisting) as a scoped infrastructure exercise to close the AWS/DevOps gap in target job descriptions.
 
 ---
 

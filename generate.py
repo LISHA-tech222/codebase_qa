@@ -1,15 +1,35 @@
 """
 Send retrieved chunks to an LLM, require citations in file_path:start-end
-format. This is the real code you keep — run it with your own Groq API
-key (export GROQ_API_KEY=...). Groq's free tier requires no credit card
-and is OpenAI-API-compatible, so this uses the `groq` package's
-Anthropic-adjacent chat completions interface.
+format. Two providers are supported, chosen per-request via the
+`provider` argument:
+
+- "groq" (default): Groq's free tier, openai/gpt-oss-20b, via AsyncGroq.
+- "bedrock": AWS Bedrock, via boto3's converse() API. boto3 has no
+  official async client, so the sync call is offloaded with
+  asyncio.to_thread() rather than awaited directly -- calling it
+  straight from an async def would block the event loop the same way a
+  stray psycopg2 call would have before Step 0. Verified this
+  offloading genuinely doesn't block (see BUGLOG / master record
+  Step 2).
+
+Why converse() over invoke_model(): converse() gives one standardized
+request/response shape across Bedrock model providers (Anthropic, Meta,
+Cohere, etc.) -- switching models later is a config change, not a
+rewrite of provider-specific body parsing. invoke_model() would be the
+right call only if a target model isn't yet supported by converse(), or
+a model-specific parameter isn't exposed by the unified API -- neither
+applies here.
 """
 
 import os
+import asyncio
+
+import boto3
 from groq import AsyncGroq
 
-MODEL = "openai/gpt-oss-20b"  # solid general-purpose free-tier model
+GROQ_MODEL = "openai/gpt-oss-20b"  # solid general-purpose free-tier model
+BEDROCK_MODEL_ID = os.environ.get("BEDROCK_MODEL_ID", "anthropic.claude-3-haiku-20240307-v1:0")
+BEDROCK_REGION = os.environ.get("AWS_REGION", "us-east-1")
 
 SYSTEM_PROMPT = """You are a codebase Q&A assistant. You will be given a \
 question and a set of code chunks retrieved from the repository, each \
@@ -41,12 +61,26 @@ def format_context(chunks: list[dict]) -> str:
     return "\n\n".join(blocks)
 
 
-async def answer_question(question: str, chunks: list[dict]) -> str:
-    client = AsyncGroq(api_key=os.environ["GROQ_API_KEY"])
+async def answer_question(question: str, chunks: list[dict], provider: str = "groq") -> str:
     context = format_context(chunks)
 
+    if provider == "groq":
+        raw_answer = await _answer_groq(question, context)
+    elif provider == "bedrock":
+        raw_answer = await _answer_bedrock(question, context)
+    else:
+        raise ValueError(f"Unknown provider: {provider!r}. Expected 'groq' or 'bedrock'.")
+
+    # Strip any citation the model fabricated that doesn't correspond to
+    # a chunk we actually retrieved and gave it — see validate_citations.py
+    from validate_citations import strip_invalid_citations
+    return strip_invalid_citations(raw_answer, chunks)
+
+
+async def _answer_groq(question: str, context: str) -> str:
+    client = AsyncGroq(api_key=os.environ["GROQ_API_KEY"])
     response = await client.chat.completions.create(
-        model=MODEL,
+        model=GROQ_MODEL,
         max_tokens=1000,
         messages=[
             {"role": "system", "content": SYSTEM_PROMPT},
@@ -56,9 +90,30 @@ async def answer_question(question: str, chunks: list[dict]) -> str:
             },
         ],
     )
-    raw_answer = response.choices[0].message.content
+    return response.choices[0].message.content
 
-    # Strip any citation the model fabricated that doesn't correspond to
-    # a chunk we actually retrieved and gave it — see validate_citations.py
-    from validate_citations import strip_invalid_citations
-    return strip_invalid_citations(raw_answer, chunks)
+
+def _bedrock_converse_sync(question: str, context: str) -> str:
+    """
+    Plain sync boto3 call. boto3 has no official async client, so this
+    function must only ever be run via asyncio.to_thread() (see
+    _answer_bedrock below) -- calling it directly from an async def
+    would block the event loop.
+    """
+    client = boto3.client("bedrock-runtime", region_name=BEDROCK_REGION)
+    response = client.converse(
+        modelId=BEDROCK_MODEL_ID,
+        system=[{"text": SYSTEM_PROMPT}],
+        messages=[
+            {
+                "role": "user",
+                "content": [{"text": f"Retrieved code:\n\n{context}\n\nQuestion: {question}"}],
+            }
+        ],
+        inferenceConfig={"maxTokens": 1000},
+    )
+    return response["output"]["message"]["content"][0]["text"]
+
+
+async def _answer_bedrock(question: str, context: str) -> str:
+    return await asyncio.to_thread(_bedrock_converse_sync, question, context)

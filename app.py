@@ -59,6 +59,7 @@ async def ingest_repo(req: IngestRequest):
 class AskRequest(BaseModel):
     question: str
     top_k: int = 5
+    provider: str = "groq"  # "groq" or "bedrock" -- Step 2
 
 
 @app.post("/ask")
@@ -80,7 +81,7 @@ async def ask(req: AskRequest):
         for r in results
     ]
 
-    answer = await answer_question(req.question, chunks)
+    answer = await answer_question(req.question, chunks, provider=req.provider)
     return {
         "answer": answer,
         "sources": [f"{c['file_path']}:{c['start_line']}-{c['end_line']}" for c in chunks],
