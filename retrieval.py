@@ -30,6 +30,7 @@ queries. Default None preserves the exact unfiltered behavior app.py's
 """
 
 from sqlalchemy import text
+from langfuse import observe
 
 from db import async_session
 
@@ -90,7 +91,7 @@ def _rrf_merge(*ranked_id_lists) -> list[int]:
             scores[chunk_id] = scores.get(chunk_id, 0.0) + 1.0 / (RRF_K + rank)
     return sorted(scores.keys(), key=lambda cid: -scores[cid])
 
-
+@observe(as_type="retriever")
 async def hybrid_search(query: str, query_embedding: list[float], repo_id: str | None = None, top_k: int = 10):
     """
     Tier-1 exact matches (symbol_name == query, case-insensitive) are

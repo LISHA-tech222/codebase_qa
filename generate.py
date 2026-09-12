@@ -26,6 +26,7 @@ import asyncio
 
 import boto3
 from groq import AsyncGroq
+from langfuse import observe
 
 GROQ_MODEL = "openai/gpt-oss-20b"  # solid general-purpose free-tier model
 BEDROCK_MODEL_ID = os.environ.get("BEDROCK_MODEL_ID", "anthropic.claude-3-haiku-20240307-v1:0")
@@ -76,7 +77,7 @@ async def answer_question(question: str, chunks: list[dict], provider: str = "gr
     from validate_citations import strip_invalid_citations
     return strip_invalid_citations(raw_answer, chunks)
 
-
+@observe(as_type="generation")
 async def _answer_groq(question: str, context: str) -> str:
     client = AsyncGroq(api_key=os.environ["GROQ_API_KEY"])
     response = await client.chat.completions.create(
@@ -114,6 +115,6 @@ def _bedrock_converse_sync(question: str, context: str) -> str:
     )
     return response["output"]["message"]["content"][0]["text"]
 
-
+@observe(as_type="generation")
 async def _answer_bedrock(question: str, context: str) -> str:
     return await asyncio.to_thread(_bedrock_converse_sync, question, context)

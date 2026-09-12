@@ -14,6 +14,7 @@ import shutil
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
+from langfuse import observe
 
 from ingest import ingest
 from retrieval import hybrid_search
@@ -61,8 +62,8 @@ class AskRequest(BaseModel):
     top_k: int = 5
     provider: str = "groq"  # "groq" or "bedrock" -- Step 2
 
-
 @app.post("/ask")
+@observe()
 async def ask(req: AskRequest):
     query_embedding = embed_query(req.question)
     results = await hybrid_search(req.question, query_embedding, top_k=req.top_k)

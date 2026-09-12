@@ -217,6 +217,30 @@ python mcp_server.py
 
 ---
 
+## 📊 Observability (Langfuse)
+
+Every `/ask` call produces a trace, using [Langfuse](https://langfuse.com/)'s OpenTelemetry-based `@observe` decorator:
+
+- The `/ask` route itself is the top-level trace.
+- `hybrid_search` is a nested **retriever** span.
+- Whichever LLM provider actually ran (`_answer_groq` or `_answer_bedrock`) is a nested **generation** span.
+
+Minimal-diff instrumentation — decorators wrap existing functions as-is, no internals changed. Uses Langfuse Cloud's free tier (self-hosting would require running Langfuse's own Postgres+ClickHouse+Redis stack, disproportionate for a tracing step).
+
+**Confirmed against a real Langfuse Cloud project** — live traces show real durations, real retrieved file paths, and correctly nested spans per request. Also verified that a Langfuse export failure (e.g. no network access) degrades gracefully: the actual `/ask` response is unaffected even if tracing itself can't reach Langfuse's servers.
+
+**Config** (`.env`):
+
+```env
+LANGFUSE_PUBLIC_KEY=your_public_key
+LANGFUSE_SECRET_KEY=your_secret_key
+LANGFUSE_HOST=https://cloud.langfuse.com
+```
+
+No explicit `Langfuse()` client instantiation anywhere in the code — `get_client()` reads these env vars automatically the first time any decorated function runs.
+
+---
+
 ## 💡 Key Engineering Decisions
 
 ### AST-based chunking
@@ -317,6 +341,7 @@ Database queries and the Groq LLM call are I/O-bound, so they were converted to 
 | Migrations | Alembic |
 | LLM | Groq (AsyncGroq) / openai/gpt-oss-20b, default; AWS Bedrock (converse API) as alternate provider |
 | Tool protocol | MCP (Model Context Protocol) |
+| Observability | Langfuse (OpenTelemetry-based tracing) |
 | Frontend | HTML/CSS/JavaScript |
 | Containerization | Docker |
 | CI | GitHub Actions |
@@ -645,6 +670,12 @@ The Bedrock integration is code-complete and verified against a mocked `boto3` c
 
 **Status:** documented honestly as pending rather than claimed as done. Once verified, model access still needs to be explicitly enabled for the target model in the Bedrock console before a real call succeeds — a separate, no-cost step from account activation.
 
+### A 21.71s trace, investigated instead of assumed
+
+Once Langfuse tracing was live, one real trace showed 21.71 seconds against a normal range of 0.3–4.5 seconds for the same kind of request.
+
+**Solution:** rather than assume a cause (candidates: Neon free-tier DB auto-suspend/resume, a cold-start-style delay, FastEmbed's lazy model load), re-ran the identical question immediately after on the same running process — it dropped to 3.16 seconds. Confirmed the cause was `embed.py`'s embedding model being lazily loaded on first use and cached afterward: a one-time per-process cost, not a per-request problem or a provider-latency difference.
+
 ---
 
 ## ☁️ Deployment
@@ -772,7 +803,7 @@ The GitHub repository URL is passed to Git as an argument rather than being inte
 ### Model integrations
 
 - ~~AWS Bedrock as an alternate/additional LLM provider alongside Groq~~ — implemented; live verification pending AWS account activation (see [LLM Providers](#-llm-providers)).
-- Langfuse tracing for prompts/retrievals/outputs.
+- ~~Langfuse tracing for prompts/retrievals/outputs~~ — implemented and confirmed working against a real Langfuse Cloud project (see [Observability](#-observability-langfuse)).
 - LangGraph, if the actual control flow shows real branching/routing worth modeling as a graph.
 
 ---
@@ -796,6 +827,7 @@ It demonstrates:
 - **async Python (asyncio, async SQLAlchemy/asyncpg)**
 - **Model Context Protocol (MCP) server implementation**
 - **multi-provider LLM integration (Groq + AWS Bedrock)**
+- **LLM observability (Langfuse, OpenTelemetry-based tracing)**
 - **Docker containerization**
 - **CI/CD**
 - **cloud deployment (Render + AWS EC2/RDS)**
@@ -810,7 +842,7 @@ That makes the project an example of engineering based on observed system behavi
 
 ## 🎯 Interview Summary
 
-> **Codebase Q&A Assistant** is a production-deployed RAG system for querying Python repositories. I built AST-based chunking to preserve semantic code structures, generated 384-dimensional FastEmbed embeddings, and stored them in PostgreSQL with pgvector. I implemented hybrid retrieval combining exact symbol matching with semantic vector search and RRF, then pinned exact matches after testing showed pure RRF could produce incorrect rankings. Retrieved source is passed to an LLM, and citations are validated against the actual retrieved chunks. I later converted the DB and LLM layers to async (asyncpg/async SQLAlchemy, AsyncGroq), correctly distinguishing I/O-bound calls worth converting from CPU-bound work that async wouldn't help; wrapped the retrieval layer as an MCP tool usable by any MCP-compatible client, verified against three independent MCP clients including Claude Desktop; and added AWS Bedrock as a second, per-request-selectable LLM provider alongside Groq, using Bedrock's unified `converse()` API and correctly offloading its sync-only client with `asyncio.to_thread()`. The Bedrock path is code-complete and verified against a mocked AWS client — live verification is honestly still pending AWS account activation, and I deliberately kept AWS credentials out of the public production deployment for cost/security reasons rather than risk exposing a billing surface on an unauthenticated endpoint. The application is exposed through FastAPI, containerized with Docker, tested with GitHub Actions, deployed on Render, and includes a custom browser UI. Separately, I deployed the same application to AWS (EC2 + RDS, with RDS locked down via security-group-to-security-group referencing rather than IP allowlisting) as a scoped infrastructure exercise to close the AWS/DevOps gap in target job descriptions.
+> **Codebase Q&A Assistant** is a production-deployed RAG system for querying Python repositories. I built AST-based chunking to preserve semantic code structures, generated 384-dimensional FastEmbed embeddings, and stored them in PostgreSQL with pgvector. I implemented hybrid retrieval combining exact symbol matching with semantic vector search and RRF, then pinned exact matches after testing showed pure RRF could produce incorrect rankings. Retrieved source is passed to an LLM, and citations are validated against the actual retrieved chunks. I later converted the DB and LLM layers to async (asyncpg/async SQLAlchemy, AsyncGroq), correctly distinguishing I/O-bound calls worth converting from CPU-bound work that async wouldn't help; wrapped the retrieval layer as an MCP tool usable by any MCP-compatible client, verified against three independent MCP clients including Claude Desktop; added AWS Bedrock as a second, per-request-selectable LLM provider alongside Groq, using Bedrock's unified `converse()` API and correctly offloading its sync-only client with `asyncio.to_thread()`; and instrumented the whole pipeline with Langfuse, tracing retrieval and generation as nested spans per request across both providers. The Bedrock path is code-complete and verified against a mocked AWS client — live verification is honestly still pending AWS account activation, and I deliberately kept AWS credentials out of the public production deployment for cost/security reasons rather than risk exposing a billing surface on an unauthenticated endpoint. The Langfuse tracing is confirmed working against a live project — it also caught a real one-time latency spike (21.71s vs. a normal 0.3–4.5s range), which I investigated rather than dismissed and traced to a one-time embedding-model load on a fresh process. The application is exposed through FastAPI, containerized with Docker, tested with GitHub Actions, deployed on Render, and includes a custom browser UI. Separately, I deployed the same application to AWS (EC2 + RDS, with RDS locked down via security-group-to-security-group referencing rather than IP allowlisting) as a scoped infrastructure exercise to close the AWS/DevOps gap in target job descriptions.
 
 ---
 

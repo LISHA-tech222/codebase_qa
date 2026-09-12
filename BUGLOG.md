@@ -274,3 +274,27 @@ Format: what broke → what I assumed was wrong → what was actually wrong → 
       billing exposure; local-only credentials mean the code path stays
       genuine and demonstrable while the deployed app fails safely at $0
       if ever hit
+22. **Verified @observe decorator preserves async function behavior before relying on it**
+    → confirmed inspect.iscoroutinefunction() still True after decoration,
+      and inspect.signature() is preserved (needed for FastAPI's request
+      parsing when decorating the /ask route itself) -- checked directly,
+      not assumed from the SDK's documented behavior
+
+23. **Verified Langfuse's export failure doesn't break the actual request**
+    → real, important safety property, not just "should work in theory":
+      ran a full /ask request with fake Langfuse credentials pointed at the
+      real (sandbox-network-blocked) host -- request returned 200 with the
+      correct answer; Langfuse's failed span export only logged a warning
+      to stderr, never touched the response. Confirms tracing failures
+      degrade gracefully rather than taking down the endpoint
+
+24. **First real trace showed 21.71s, far outside the 0.3-4.5s range of others**
+    → assumed initial hypothesis: could be Neon free-tier DB auto-suspend/
+      resume, Render cold start, or FastEmbed's lazy model load -- did not
+      assume which one without checking
+    → confirmed by re-running the identical question immediately after, on
+      the same already-running local process: second call dropped to 3.16s
+    → actual cause: FastEmbed's model is lazily loaded on first use
+      (_get_model() in embed.py) and cached after -- the slow trace was the
+      one-time per-process model-load cost, not a per-request problem, a
+      provider-latency difference, or a real performance bug
