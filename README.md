@@ -241,6 +241,28 @@ No explicit `Langfuse()` client instantiation anywhere in the code — `get_clie
 
 ---
 
+## 🤖 LangGraph Agent
+
+On top of the MCP tool and the existing RAG pipeline, `graph.py` implements a real tool-calling agent — closing three specific gaps (multi-agent coordination, tool-calling/ReAct agents, human-in-the-loop), confirmed against real target job description language, not assumed.
+
+**Architecture:** `reasoner ↔ tools → critic → finalize`
+
+- **`reasoner`** — `ChatGroq("openai/gpt-oss-20b")` bound to one real tool, `search_codebase`. Decides, via genuine function-calling, whether to search again or answer — not a hand-designed rule. `search_codebase` wraps the existing `query_codebase` MCP tool through a **real MCP client** (`langchain_mcp_adapters.MultiServerMCPClient`, stdio), not a direct function import — a genuine protocol boundary.
+- **`critic`** — a real, separate second agent: different role (substantive review, not citation-format checking), no tool access, structured output, and feedback that measurably changes the reasoner's next attempt. Built only after an honest audit found the existing citation validator didn't hold up as a genuine "agent."
+- **`finalize`** — the citation guardrail, now with an escalating decision: 1st invalid citation retries with corrective feedback; 2nd consecutive failure pauses via `interrupt()` for human review, backed by Postgres checkpointing (`AsyncPostgresSaver`, not `MemorySaver`) so the pause survives real restarts.
+- **Security-relevant design choice**: `repo_id`/`top_k` are hidden from the LLM's tool-calling schema entirely (`InjectedState`) — the model never sees or chooses them. This keeps repository isolation structurally guaranteed by code, not dependent on the model faithfully repeating the right `repo_id`.
+
+**Verified live, not just mock-verified.** Every conditional branch (forced tool-call, forced interrupt+resume, forced critic hand-off, forced recursion-limit) is covered by real automated tests (`tests/test_graph.py`, wired into CI) with Groq mocked — but the agent was also run against the real Groq API with a real key, which surfaced four genuine bugs no mocked test could have caught:
+
+1. Groq occasionally emits malformed tool-call JSON — fixed with a bounded, specific retry.
+2. The real model got stuck searching the same query repeatedly — fixed with a hard, code-enforced cap (`MAX_SEARCHES=5`) that structurally removes the tool, not just asks nicely.
+3. **The critical one**: the reasoner's tool result only ever said `"Found N results"` — the model never actually saw the retrieved code. It correctly and honestly reported it didn't have content it had technically "found." Fixed by building real code content into the tool result.
+4. A Windows-only crash (`ProactorEventLoop` incompatible with async `psycopg`) that a Linux sandbox could never have surfaced — found running the real suite on the actual deployment target.
+
+After the fixes, a real live run produced a detailed, accurate, correctly-cited answer grounded in genuinely-read code — see `BUGLOG.md` and the master project record for the full verification trail.
+
+---
+
 ## 💡 Key Engineering Decisions
 
 ### AST-based chunking
@@ -342,6 +364,7 @@ Database queries and the Groq LLM call are I/O-bound, so they were converted to 
 | LLM | Groq (AsyncGroq) / openai/gpt-oss-20b, default; AWS Bedrock (converse API) as alternate provider |
 | Tool protocol | MCP (Model Context Protocol) |
 | Observability | Langfuse (OpenTelemetry-based tracing) |
+| Agent orchestration | LangGraph (reasoner/critic/finalize, Postgres checkpointing, human-in-the-loop) |
 | Frontend | HTML/CSS/JavaScript |
 | Containerization | Docker |
 | CI | GitHub Actions |
@@ -804,7 +827,7 @@ The GitHub repository URL is passed to Git as an argument rather than being inte
 
 - ~~AWS Bedrock as an alternate/additional LLM provider alongside Groq~~ — implemented; live verification pending AWS account activation (see [LLM Providers](#-llm-providers)).
 - ~~Langfuse tracing for prompts/retrievals/outputs~~ — implemented and confirmed working against a real Langfuse Cloud project (see [Observability](#-observability-langfuse)).
-- LangGraph, if the actual control flow shows real branching/routing worth modeling as a graph.
+- ~~LangGraph, if the actual control flow shows real branching/routing worth modeling as a graph~~ — implemented as a real tool-calling agent, verified live (see [LangGraph Agent](#-langgraph-agent)).
 
 ---
 
@@ -827,6 +850,7 @@ It demonstrates:
 - **async Python (asyncio, async SQLAlchemy/asyncpg)**
 - **Model Context Protocol (MCP) server implementation**
 - **multi-provider LLM integration (Groq + AWS Bedrock)**
+- **stateful agent orchestration (LangGraph) with tool-calling, human-in-the-loop, and multi-agent hand-off**
 - **LLM observability (Langfuse, OpenTelemetry-based tracing)**
 - **Docker containerization**
 - **CI/CD**
@@ -842,7 +866,7 @@ That makes the project an example of engineering based on observed system behavi
 
 ## 🎯 Interview Summary
 
-> **Codebase Q&A Assistant** is a production-deployed RAG system for querying Python repositories. I built AST-based chunking to preserve semantic code structures, generated 384-dimensional FastEmbed embeddings, and stored them in PostgreSQL with pgvector. I implemented hybrid retrieval combining exact symbol matching with semantic vector search and RRF, then pinned exact matches after testing showed pure RRF could produce incorrect rankings. Retrieved source is passed to an LLM, and citations are validated against the actual retrieved chunks. I later converted the DB and LLM layers to async (asyncpg/async SQLAlchemy, AsyncGroq), correctly distinguishing I/O-bound calls worth converting from CPU-bound work that async wouldn't help; wrapped the retrieval layer as an MCP tool usable by any MCP-compatible client, verified against three independent MCP clients including Claude Desktop; added AWS Bedrock as a second, per-request-selectable LLM provider alongside Groq, using Bedrock's unified `converse()` API and correctly offloading its sync-only client with `asyncio.to_thread()`; and instrumented the whole pipeline with Langfuse, tracing retrieval and generation as nested spans per request across both providers. The Bedrock path is code-complete and verified against a mocked AWS client — live verification is honestly still pending AWS account activation, and I deliberately kept AWS credentials out of the public production deployment for cost/security reasons rather than risk exposing a billing surface on an unauthenticated endpoint. The Langfuse tracing is confirmed working against a live project — it also caught a real one-time latency spike (21.71s vs. a normal 0.3–4.5s range), which I investigated rather than dismissed and traced to a one-time embedding-model load on a fresh process. The application is exposed through FastAPI, containerized with Docker, tested with GitHub Actions, deployed on Render, and includes a custom browser UI. Separately, I deployed the same application to AWS (EC2 + RDS, with RDS locked down via security-group-to-security-group referencing rather than IP allowlisting) as a scoped infrastructure exercise to close the AWS/DevOps gap in target job descriptions.
+> **Codebase Q&A Assistant** is a production-deployed RAG system for querying Python repositories. I built AST-based chunking to preserve semantic code structures, generated 384-dimensional FastEmbed embeddings, and stored them in PostgreSQL with pgvector. I implemented hybrid retrieval combining exact symbol matching with semantic vector search and RRF, then pinned exact matches after testing showed pure RRF could produce incorrect rankings. Retrieved source is passed to an LLM, and citations are validated against the actual retrieved chunks. I later converted the DB and LLM layers to async (asyncpg/async SQLAlchemy, AsyncGroq), correctly distinguishing I/O-bound calls worth converting from CPU-bound work that async wouldn't help; wrapped the retrieval layer as an MCP tool usable by any MCP-compatible client, verified against three independent MCP clients including Claude Desktop; added AWS Bedrock as a second, per-request-selectable LLM provider alongside Groq; instrumented the whole pipeline with Langfuse; and built a real tool-calling agent in LangGraph on top of all of it — a reasoner that decides via genuine function-calling whether to search again or answer, a separate critic agent that reviews substance and hands back specific feedback, and human-in-the-loop for repeated citation failures backed by Postgres checkpointing so it survives real restarts. The most valuable finding in the whole project came from live-testing that agent against a real API key rather than trusting my mocked tests: a bug where the model's tool results only said "found N results" without the actual code was completely invisible to every mocked test (none of them depended on the model reading real content), and only surfaced when a real model, honestly trying to answer, correctly reported it didn't have content it had technically retrieved. The Bedrock path is code-complete and verified against a mocked AWS client — live verification is honestly still pending AWS account activation. The application is exposed through FastAPI, containerized with Docker, tested with GitHub Actions, deployed on Render, and includes a custom browser UI. Separately, I deployed the same application to AWS (EC2 + RDS, with RDS locked down via security-group-to-security-group referencing rather than IP allowlisting) as a scoped infrastructure exercise to close the AWS/DevOps gap in target job descriptions.
 
 ---
 

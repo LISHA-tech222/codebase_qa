@@ -298,3 +298,239 @@ Format: what broke → what I assumed was wrong → what was actually wrong → 
       (_get_model() in embed.py) and cached after -- the slow trace was the
       one-time per-process model-load cost, not a per-request problem, a
       provider-latency difference, or a real performance bug
+
+25. **langchain-mcp-adapters hard-pins mcp<2.0.0, conflicting with mcp_server.py's mcp 2.x MCPServer**
+    → assumed mcp_server.py (built in Step 1 against mcp 2.x's MCPServer)
+      would work unchanged as the target of a LangGraph MCP-client retrieve
+      node
+    → actually langchain-mcp-adapters 0.3.2 declares mcp<2.0.0,>=1.24.0 --
+      confirmed via importlib.metadata.requires(), not guessed. Installing
+      it silently downgraded mcp to 1.30.0, which has no
+      mcp.server.mcpserver.MCPServer at all, breaking mcp_server.py's import
+    → real design decision, not a silent workaround: downgraded mcp_server.py
+      to mcp 1.x's FastMCP API (a genuine reversal of Step 1's earlier
+      FastMCP->MCPServer fix, made deliberately for ecosystem compatibility,
+      not a regression). Re-verified functional parity by re-running Step 1's
+      exact in-memory protocol test (tool discovery + repo_id-scoped query)
+      against the downgraded server -- identical results to before
+
+26. **MultiServerMCPClient subprocess call failed with a TLS certificate error**
+    → assumed once the mcp version conflict was fixed, the retrieve node
+      would work end-to-end
+    → actually the MCP SDK deliberately strips a spawned server subprocess's
+      environment down to HOME/PATH/TERM only (confirmed via
+      get_default_environment(), not assumed) -- a real, sensible security
+      default that prevents secrets leaking from parent to child process.
+      The subprocess's embed_query call used REAL FastEmbed, which tried
+      reaching huggingface.co; this sandbox's network egress proxy combined
+      with the minimal subprocess environment turned the usual "host not
+      allowed" 403 into a self-signed-certificate TLS error instead
+    → this also surfaced a real, separate architectural gap: since
+      mcp_server.py now runs as a genuine OS subprocess when spawned by
+      MultiServerMCPClient, monkeypatching embed.embed_query from a parent
+      test process (this project's method everywhere else) cannot reach it
+    → fixed properly, not just worked around: added EMBEDDINGS_PROVIDER=stub
+      as an env-var switch inside embed.py itself, matching the project's
+      existing env-driven config pattern (BEDROCK_MODEL_ID, LANGFUSE_HOST).
+      Tests pass this through MultiServerMCPClient's connection env dict.
+      Verified this actually fixes the root cause (not just masks the
+      symptom) by re-running the same failing call with EMBEDDINGS_PROVIDER=
+      stub set -- succeeded, and separately confirmed the multi-chunk
+      response shape (one MCP content block per chunk, each block's `text`
+      a JSON string) by testing with 2 seeded chunks before writing the
+      retrieve node's parsing logic
+
+27. **Verified the Postgres checkpointer's actual claimed benefit, not just that it runs**
+    → confirmed a checkpoint is genuinely persisted after graph.ainvoke() by
+      calling graph.aget_state(config) and comparing to the invocation's
+      result -- not just "no exception was raised"
+    → then verified the real differentiator over MemorySaver specifically:
+      recovered the exact same checkpoint state from a COMPLETELY SEPARATE
+      Python process (no shared memory with the process that wrote it,
+      thread_id looked up fresh from the checkpoints table) -- proving the
+      checkpoint survives process boundaries, which MemorySaver's in-memory
+      dict could never do. This is the concrete proof behind the Postgres-
+      vs-MemorySaver decision, not just an assumption from the library docs
+
+28. **get_input_schema() was the wrong artifact for checking "is repo_id hidden from the LLM"**
+    → assumed a tool's get_input_schema() reflects what the LLM actually
+      sees when the tool is bound to a chat model
+    → actually it includes InjectedState-annotated params too -- the
+      correct artifact is what convert_to_openai_tool() produces, which
+      is the literal JSON schema sent to the LLM API. Checked that
+      directly: it correctly showed only `query`, confirming repo_id/top_k
+      really are invisible to the model, not just intended to be
+
+29. **ToolNode.ainvoke() called standalone (outside a compiled graph) failed on InjectedState**
+    → assumed I could unit-test InjectedState injection by calling
+      ToolNode.ainvoke(state) directly
+    → actually InjectedState injection needs the runtime context a
+      compiled StateGraph provides during execution -- calling ToolNode
+      standalone raised "Missing required config key" instead of silently
+      working
+    → fixed by testing inside an actual minimal StateGraph instead, which
+      is also the real usage pattern, not a workaround
+
+30. **Duplicate sources when two different search queries retrieved overlapping chunks**
+    → not assumed away as fine -- observed directly in a 3-turn loop test
+      (two searches against a small 2-chunk test repo both returned both
+      chunks), producing a sources list with each citation twice
+    → fixed with order-preserving dedup in finalize(), re-verified the
+      same test now returns each citation once
+
+## Design decisions -- Step 4 (LangGraph agentic orchestration)
+
+- **mcp version conflict resolved by downgrading mcp_server.py to mcp 1.x's
+  FastMCP**, not by avoiding langchain-mcp-adapters. A single venv can only
+  have one mcp version; langchain-mcp-adapters hard-pins mcp<2.0.0
+  (confirmed via importlib.metadata, not guessed). Re-verified mcp_server.py's
+  full Step 1 behavior (tool discovery, repo_id scoping) held after the
+  downgrade via the same in-memory protocol test used in Step 1.
+
+- **Real MCP client (MultiServerMCPClient), not a direct function import,**
+  for the retrieve/search_codebase tool. The graph is a genuine MCP client
+  over the stdio protocol boundary, not just reused Python code -- this is
+  what actually closes the MCP-orchestration gap rather than merely reusing
+  Step 1's code.
+
+- **EMBEDDINGS_PROVIDER=stub added to embed.py** because mcp_server.py now
+  runs as a genuine OS subprocess when spawned by MultiServerMCPClient --
+  monkeypatching embed.embed_query from a parent test process (used
+  everywhere else in this project) cannot reach a separate process's
+  imports. An env-var switch, passed through the subprocess's connection
+  config, is the only way to make this testable in CI.
+
+- **Postgres-backed checkpointer (AsyncPostgresSaver), not MemorySaver.**
+  Verified the actual differentiator, not just that the checkpointer runs:
+  recovered a checkpoint from a completely separate Python process with no
+  shared memory. This is required for item 4 (human-in-the-loop) to be
+  genuinely resumable across a real gap, not just "resumable as long as the
+  process never restarts." Introduces psycopg (v3) as a third Postgres
+  driver in this project (alongside psycopg2 for Alembic, asyncpg for the
+  app) -- deliberate: each does a job the others can't cleanly do.
+
+- **repo_id/top_k hidden from the LLM's tool-calling schema via InjectedState,**
+  not passed through the system prompt and trusted. This keeps Step 1's
+  repo_id isolation guarantee structurally true (enforced by code) rather
+  than model-behavior-dependent (trusting the LLM to always repeat the
+  correct repo_id across a multi-turn reasoning loop, where a slip would be
+  a real cross-repo data leak). Verified directly: a fake reasoner that only
+  ever provided `query` still resulted in the real, correct repo_id being
+  used at execution time.
+
+- **Only one real tool given to the reasoner (search_codebase).** The plan
+  said "query_codebase (and any other available action)" -- no second tool
+  actually exists in this system yet, so none was invented just to make the
+  tool list look fuller than it honestly is.
+
+31. **Recursion limit (item 6): confirmed real behavior, not left theoretical**
+    → forced a reasoner that never stops calling tools (recursion_limit
+      temporarily set to 6) -- raised langgraph.errors.GraphRecursionError
+      with a clear message, exactly as documented
+    → real, non-obvious finding: the checkpoint was NOT discarded --
+      aget_state() after the error showed all messages/chunks accumulated
+      up to that point preserved, with state.next correctly pointing at
+      the node that would run next
+    → further verified this is genuinely resumable, not just inspectable:
+      re-invoking with a higher recursion_limit on the same thread_id
+      continued from exactly where it left off (same accumulated chunks
+      carried forward), not a restart. Production default set to 25 based
+      on walking real traces (a healthy multi-retry run takes ~10-11 hops)
+
+32. **Windows: psycopg_pool.PoolTimeout -- ProactorEventLoop incompatible with async psycopg**
+    → found only when Lisha ran the real test suite on her Windows machine
+      (my Linux sandbox can't reproduce this -- ProactorEventLoop doesn't
+      exist there). All 17 pre-existing tests passed; only the new
+      checkpointer-dependent tests failed
+    → psycopg's own warning named the exact cause: "Psycopg cannot use the
+      'ProactorEventLoop' to run in async mode"
+    → fixed by setting asyncio.WindowsSelectorEventLoopPolicy() at the very
+      top of both tests/conftest.py and checkpointer.py, before any other
+      imports run (must happen before any event loop is created). This is
+      a genuine production bug, not just a test artifact -- the same crash
+      would happen running the real app on Windows, so the fix went into
+      checkpointer.py itself, not just the test config. Re-ran the full
+      suite after the fix: all 21 tests passed
+
+33. **Live-only: Groq (openai/gpt-oss-20b) generated malformed tool-call JSON**
+    → found on Lisha's first live, unmocked run -- groq.BadRequestError,
+      code 'tool_use_failed', failed_generation showed literally invalid
+      JSON (stray comma/quote) in the model's own tool-call arguments
+    → this is a real, known failure mode of smaller/faster tool-calling
+      models, not a bug in this project's code -- but it exposed a real
+      gap: the whole request crashed uncaught on a single occurrence
+    → fixed with a bounded retry (3 attempts) around the reasoner's LLM
+      call, catching groq.BadRequestError specifically. Verified in
+      isolation first (reasoner() called directly, mocked to fail twice
+      then succeed -- exactly 3 calls, correct result) before trusting it
+      in the full graph
+
+34. **Live-only: reasoner got stuck in a genuine repetitive search loop**
+    → found on Lisha's second live run -- the real model searched
+      "configuration parser" 4 times VERBATIM in a row, then kept
+      searching near-identical variants, accumulating 60 chunks across 13
+      searches before hitting GraphRecursionError and crashing. This
+      config-parser query never should have needed that many searches --
+      the repo genuinely may not have had one
+    → assumed initially this might be a hypothetical edge case; it was not
+    → fixed with a real, code-enforced hard cap (MAX_SEARCHES=5): past this
+      many searches, the reasoner is called WITHOUT tool-binding at all --
+      the model literally cannot call the tool again, not just asked
+      nicely not to. Also tightened the system prompt against repeating
+      queries. Verified by mocking a reasoner that never wants to stop --
+      confirmed it was forced to a plain-text answer at exactly 5 searches,
+      no crash
+
+35. **MAJOR, live-only: the reasoner never actually received retrieved code content**
+    → the single most important bug in this entire project. search_codebase
+      returned only "Found N result(s) for QUERY" as the ToolMessage
+      content -- the real chunk content/citations were stored in state for
+      finalize's citation check, but the MODELITSELF was never shown them
+    → this was completely invisible to every mocked test in this step,
+      because every test scripted the model's final answer directly --
+      none of them depended on the model actually reading tool output to
+      produce an answer. Only a live model, genuinely trying to answer from
+      what it could see, exposed this
+    → confirmed by Lisha's live run: the model correctly and honestly said
+      "I don't have the contents of preprocess.py available" -- it wasn't
+      wrong or hallucinating, it was telling the truth about what it had
+      actually been given
+    → fixed by building real formatted context (file path, symbol name,
+      code content) into the ToolMessage, matching generate.py's existing
+      format_context() pattern. Verified directly: captured exactly what
+      the reasoner received on its second call and confirmed real code
+      (not just a count) was present, before trusting the fix
+    → re-verified live after the fix: a real question ("What does
+      preprocess.py do?") produced a detailed, accurate, correctly-cited,
+      genuinely-grounded answer -- the positive-path confirmation this
+      whole step needed
+
+## Design decisions -- Step 4 continued (items 6-8)
+
+- **MAX_SEARCHES hard cap, separate from the graph's recursion_limit.**
+  recursion_limit is an infra-level safety net (crashes the whole request
+  if exceeded); MAX_SEARCHES is a graceful, code-enforced behavioral limit
+  discovered necessary only through live testing -- the model cannot be
+  trusted to reliably self-limit tool calls, so the option to call the tool
+  again is structurally removed rather than requested via prompt alone.
+
+- **Escalating retry fallback in reasoner(), not a flat retry.** The final
+  retry attempt drops tool-binding entirely and tells the model tools are
+  unavailable, guaranteeing the function always returns a valid response
+  rather than exhausting all attempts identically and crashing regardless.
+
+- **CI tests (item 7) cover forced tool-call, forced interrupt+resume,
+  forced critic handoff, and recursion-limit-survives-and-resumes** (one
+  addition beyond the three named in the plan, since that safety net is
+  exactly the kind of thing that silently breaks later without CI). All
+  Groq calls mocked; test.yml's CI env gained EMBEDDINGS_PROVIDER=stub and
+  a dummy GROQ_API_KEY so the MCP subprocess and reasoner construction work
+  in CI without real network access.
+
+- **Langfuse as_type values chosen precisely, not generically:** reasoner
+  as "agent", search_codebase as "tool", critic as "evaluator", finalize as
+  "guardrail", ask_agent as the top-level trace. Found and fixed a real bug
+  applying this: @observe wrapping an already-@tool-decorated object
+  silently destroyed its BaseTool interface (.ainvoke disappeared) --
+  fixed by reversing decorator order (@tool outermost), re-verified the
+  InjectedState hiding still held afterward.

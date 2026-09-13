@@ -4,7 +4,7 @@ query_codebase. Wraps the existing hybrid_search service layer directly
 (retrieval.py, embed.py) — does not touch app.py or any existing
 FastAPI route.
 
-Transport: stdio (default for MCPServer.run()). Single tool, no
+Transport: stdio (default for FastMCP.run()). Single tool, no
 resources, per plan.
 
 "citation-validated": each returned chunk's citation is constructed
@@ -16,12 +16,19 @@ master record for the full reasoning behind this decision.
 """
 
 from pydantic import BaseModel
-from mcp.server.mcpserver import MCPServer
+from mcp.server.fastmcp import FastMCP
 
 from retrieval import hybrid_search
 from embed import embed_query
 
-mcp = MCPServer(name="codebase-qa", version="0.1.0")
+# Step 4 note: downgraded from mcp.server.mcpserver.MCPServer (mcp 2.x,
+# Step 1's original choice) back to mcp.server.fastmcp.FastMCP (mcp 1.x)
+# because langchain-mcp-adapters (needed for the LangGraph retrieve node)
+# hard-pins mcp<2.0.0. A single venv can only have one mcp version, so
+# this was a deliberate compatibility choice, not a regression -- see
+# BUGLOG / master record Step 4 for the full reasoning. Re-verified
+# working identically to the mcp 2.x version afterward.
+mcp = FastMCP(name="codebase-qa")
 
 
 class ValidatedChunk(BaseModel):

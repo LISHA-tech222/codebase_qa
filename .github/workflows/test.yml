@@ -27,6 +27,8 @@ jobs:
 
     env:
       DATABASE_URL: postgresql://codeqa_user:testpassword@localhost:5432/codeqa_test
+      EMBEDDINGS_PROVIDER: stub
+      GROQ_API_KEY: dummy-key-for-graph-tests-fully-mocked
 
     steps:
       - uses: actions/checkout@v4

@@ -14,6 +14,11 @@ import psycopg2
 import pytest
 from dotenv import load_dotenv
 import pytest_asyncio
+import sys
+import asyncio
+
+if sys.platform == "win32":
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
 TEST_DB = "codeqa_test"
 TEST_DB_URL = f"postgresql+psycopg2://codeqa_user:devpassword@localhost:5432/{TEST_DB}"

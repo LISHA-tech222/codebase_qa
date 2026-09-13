@@ -10,6 +10,11 @@ uvicorn==0.52.4
 python-dotenv==1.0.1
 asyncpg==0.31.0
 pytest-asyncio==1.4.0
-mcp==2.1.1
+mcp==1.30.0
 boto3
 langfuse
+langgraph
+langchain-mcp-adapters
+langgraph-checkpoint-postgres
+psycopg[binary]
+langchain-groq
