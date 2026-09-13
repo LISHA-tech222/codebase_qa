@@ -534,3 +534,22 @@ Format: what broke → what I assumed was wrong → what was actually wrong → 
   silently destroyed its BaseTool interface (.ainvoke disappeared) --
   fixed by reversing decorator order (@tool outermost), re-verified the
   InjectedState hiding still held afterward.
+
+36.  Hard dependency conflict: groq==1.6.0 vs langchain-groq's groq<1.0.0 requirement
+    → this existed from the moment Step 4 added langchain-groq to
+      requirements.txt alongside Steps 0/2's groq==1.6.0 pin, but wasn't
+      caught until a real pip install -r requirements.txt from a clean
+      environment (GitHub Actions, then Render) tried to resolve both
+      together -- pip's resolver correctly refused with ResolutionImpossible
+    → gap in my own verification: packages were installed incrementally
+      across many sandbox sessions rather than one clean install from
+      requirements.txt, so this conflict was invisible to me until it hit
+      real CI/deployment
+    → fixed by downgrading groq to 0.37.1 (latest version satisfying
+      langchain-groq's groq>=0.30.0,<1.0.0 across all its versions).
+      Verified AsyncGroq, chat.completions.create()'s signature, and
+      BadRequestError (used in generate.py and graph.py respectively) are
+      all unchanged in 0.37.1 before trusting the downgrade. Confirmed with
+      a real pip install -r requirements.txt into a completely fresh venv(matching what CI/Render actually do) -- resolved cleanly, then ran
+      the full test suite in that same fresh venv: 20/21 passing, same
+      pre-existing unrelated failure as always
