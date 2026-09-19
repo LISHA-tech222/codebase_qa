@@ -752,3 +752,78 @@ Format: what broke → what I assumed was wrong → what was actually wrong → 
   this specific account/deployment either -- unlike Bedrock, which is
   still genuinely blocked on pending AWS account verification (BUGLOG
   #21), Azure hit no such blocker here.
+
+42. **Writing CLAUDE.md from the actual code (not the README) surfaced several places the existing docs overstated or mis-described reality**
+    → assumed the README's description of the system was accurate enough
+      to base repo guidance on -- it reads as a complete, integrated
+      pipeline, and has a "LangGraph Agent" section describing the agent as
+      built "on top of" the existing RAG pipeline
+    → actually checked each claim against the code before writing it down,
+      and found real gaps between what the docs imply and what's wired up:
+      (1) `graph.py`'s LangGraph agent is NOT reachable from any FastAPI
+      route -- `app.py` has exactly three routes (`/`, `/ingest`, `/ask`)
+      and never imports `graph.py`; it's only invokable via a direct Python
+      call, `tests/test_graph.py` (mocked LLM), or the standalone
+      `test_live_agent.py` script. (2) `validate_citations()` (the
+      structured valid/invalid report function) is dead code in production
+      -- only `strip_invalid_citations()` is ever called by `generate.py`/
+      `graph.py`; the report function is exercised solely by its own test.
+      (3) The citation "retry loop" the task description asked about only
+      exists inside `graph.py`'s `finalize` node -- the live `/ask` path
+      (`generate.py`) is single-pass strip-and-return with no retry at all.
+      (4) No ANN index (IVFFlat or otherwise) exists on `chunks.embedding` --
+      only one Alembic migration exists, whose own comment explicitly
+      defers the index; semantic search is an exact sequential scan.
+      (5) The local `.env` sets `EMBEDDINGS_PROVIDER=stub`, so local runs of
+      the app itself (not just tests) currently use hash-based
+      pseudo-embeddings, not real FastEmbed vectors
+    → fixed by writing CLAUDE.md around what the code actually does, with an
+      explicit "Not implemented / not live" section listing exactly these
+      gaps so a future session doesn't assume the docs' framing is the
+      wired-up reality. Deliberately did NOT rewrite the README's
+      description of these items in the same commit -- fixing docs was out
+      of scope for a "write CLAUDE.md" task -- which is why the later docs
+      update (README + master project record) applies its own
+      strikethrough-and-annotate convention instead of silent rewrites
+
+43. **Master project record: assumed the wrong section numbers for the new Step entries, caught before finalizing**
+    → while updating `revision/codebase_qa_complete_master_project_record
+      (1).md`, wrote a round of cross-references ("see Section 33/34/35")
+      for the new RRF/JS/Azure steps based on a guess about where the
+      numbering left off, before ever checking the file's actual heading
+      sequence
+    → actually the document's top-level sections ran through 30 (Step 4),
+      so the next three are 31/32/33 -- my references were off by two in
+      every case, and worse, one wrong number (33) collided with what would
+      legitimately become a real section number, so a naive find-and-replace
+      would have corrupted the correct references too
+    → caught by grepping the real `^# [0-9]` headings and grepping my own
+      references against them BEFORE appending the new sections, not after.
+      Fixed with a two-phase placeholder swap (33->tmp, 34->tmp, 35->tmp,
+      then tmp->31/32/33) so no substitution could clobber another's
+      output, and re-grepped afterward to confirm every reference resolved
+      to a section that actually exists
+
+## Design decision -- documentation update convention (README + master record)
+
+- **Superseded statements are struck through and annotated, never deleted.**
+  When new work made an old doc statement false or incomplete ("Python
+  only," "supports two LLM providers," "RRF ties broken by insertion
+  order"), the old text stays visible as `~~old text~~` with a bold
+  "updated (Step N)" note explaining what replaced it and where to read
+  more -- rather than being silently rewritten. Chose this after
+  confirming with the user that it's the intended convention; it also
+  matches a pattern the README's own Future Roadmap section was already
+  using (`~~item~~ -- implemented, see X`), extended consistently to every
+  section that needed it rather than applied in one place only.
+- **Brand-new capabilities are added as fresh content, not struck-through
+  placeholders.** Strikethrough is only for statements that WERE true or
+  pending and are now superseded -- not a decoration for things that were
+  never previously stated (e.g. the RRF tiebreak wasn't previously a
+  roadmap item, so it gets a new subsection, not a fabricated "old" line to
+  cross out).
+- **Original diagrams kept as drawn, annotated below rather than redrawn.**
+  The architecture ASCII diagrams (README and master record) predate the
+  JS and Azure work; they're still accurate for the default path
+  (Python + Groq), so each got an italic note beneath it pointing to what's
+  changed, instead of a redraw that would erase the original.

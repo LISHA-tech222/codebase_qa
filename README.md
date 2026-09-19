@@ -94,13 +94,17 @@ Citations are checked against the chunks that were actually retrieved instead of
 
 The retrieval layer above is also exposed directly as an MCP tool (`query_codebase`), so any MCP-compatible client — not just this web UI — can query the same hybrid search without going through the LLM-generation step. See [MCP Tool](#-mcp-tool) below.
 
+*Diagram kept as originally drawn. It's still accurate for the default path (Python source, Groq LLM). Since then: "Semantic Code Chunks" also covers JavaScript (chunking dispatches by file extension — see [Language Support](#-language-support-multi-language-chunking) below), and "Groq LLM" is one of three per-request provider choices — see [LLM Providers](#-llm-providers).*
+
 ---
 
 ## 🔍 RAG Pipeline
 
 ### 1. Ingestion
 
-`chunker.py` walks Python ASTs and extracts meaningful code structures:
+~~`chunker.py` walks Python ASTs and extracts meaningful code structures:~~ *(previous, Python-only)*
+
+**Current:** `chunker.py` dispatches by file extension to a per-language chunker. Python (`.py`) still walks the stdlib `ast` module, unchanged. JavaScript (`.js`) is now also supported via `chunker_js.py` (tree-sitter) — see [Language Support](#-language-support-multi-language-chunking) below. Both extract the same shape of meaningful code structures:
 
 - functions
 - classes
@@ -154,6 +158,8 @@ The remaining candidates are merged using **Reciprocal Rank Fusion (RRF)** with:
 k = 60
 ```
 
+~~Ties in RRF score were broken arbitrarily by dict/argument insertion order.~~ — **updated:** ties are now broken by an explicit, deterministic rule: (1) prefer the chunk appearing in more ranked lists — both exact and semantic agreeing on a chunk outranks either alone, even at equal score; (2) prefer the better (lowest) individual rank; (3) fall back to chunk ID, ascending, as a pure-determinism floor. See [Why RRF tiebreak?](#why-rrf-tiebreak) below.
+
 Retrieval can optionally be scoped to a single repository via `repo_id` (used by the MCP tool); the web UI's `/ask` endpoint leaves it unscoped, searching across all ingested repositories, matching its original behavior.
 
 ### 5. Generation
@@ -167,7 +173,14 @@ openai/gpt-oss-20b
 
 The model generates an answer grounded in the retrieved source.
 
-AWS Bedrock is also supported as an alternate provider, selectable per-request (`"provider": "bedrock"` in the `/ask` request body) via Bedrock's unified `converse()` API — see [LLM Providers](#-llm-providers) below. Groq stays the default and the actual deployment path.
+~~AWS Bedrock is also supported as an alternate provider, selectable per-request (`"provider": "bedrock"` in the `/ask` request body) via Bedrock's unified `converse()` API — see [LLM Providers](#-llm-providers) below. Groq stays the default and the actual deployment path.~~ *(previous, single alternate provider)*
+
+**Current:** two alternate providers are now supported, both selectable per-request (`"provider": "bedrock"` or `"provider": "azure"` in the `/ask` request body), no env-var toggle and no auto-fallback between any of the three:
+
+- AWS Bedrock, via Bedrock's unified `converse()` API.
+- Azure AI Foundry, via the `openai` package's `AsyncOpenAI` client, `gpt-4.1-mini` — **live-verified**, unlike Bedrock which is still pending AWS account activation.
+
+See [LLM Providers](#-llm-providers) below. Groq stays the default and the actual deployment path.
 
 ### 6. Citation validation
 
@@ -179,7 +192,9 @@ A citation that does not correspond to retrieved source is removed rather than t
 
 ## 🔀 LLM Providers
 
-`/ask` supports two LLM providers, chosen per-request via an optional `provider` field (defaults to `"groq"` if omitted — existing callers are unaffected):
+~~`/ask` supports two LLM providers, chosen per-request via an optional `provider` field (defaults to `"groq"` if omitted — existing callers are unaffected):~~ *(previous, two providers)*
+
+**Current:** `/ask` supports **three** LLM providers, chosen per-request via an optional `provider` field (defaults to `"groq"` if omitted — existing callers are unaffected). No env-var toggle and no auto-fallback between any of them — the caller picks explicitly, every time:
 
 ```json
 {
@@ -190,10 +205,15 @@ A citation that does not correspond to retrieved source is removed rather than t
 
 - **`groq`** (default) — Groq's free tier, `openai/gpt-oss-20b`, via `AsyncGroq`. This is the actual production path.
 - **`bedrock`** — AWS Bedrock, via the unified `converse()` API (not the older, model-specific `invoke_model()` — one request shape works across Bedrock's model providers, so switching models is a config change). `boto3` has no official async client, so the call is offloaded with `asyncio.to_thread()` rather than awaited directly, to avoid blocking the event loop.
+- **`azure`** *(new)* — Azure AI Foundry, `gpt-4.1-mini`, via the `openai` package's `AsyncOpenAI` client pointed at the Foundry resource's `v1` endpoint (`base_url=".../openai/v1"`) — **not** `AsyncAzureOpenAI`, which targets the older, versioned Azure OpenAI API the provisioned endpoint doesn't use. Confirmed against Microsoft's own migration docs before writing the integration, not assumed from the more commonly-documented client.
 
-**Status:** code-complete and verified against a mocked AWS client (request assembly, response parsing, and citation validation all confirmed working correctly together) — a live call against real AWS has not yet been made, pending AWS account verification completing. Documented honestly as pending rather than claimed as done; see `BUGLOG.md` #20–21.
+**Status:** code-complete and verified against a mocked AWS client (request assembly, response parsing, and citation validation all confirmed working correctly together) — a live call against real AWS has not yet been made, pending AWS account verification completing. Documented honestly as pending rather than claimed as done; see `BUGLOG.md` #20–21. *(This status is about Bedrock, and is still accurate — Bedrock is still pending.)*
+
+**Status (Azure): live-verified, not pending.** Verified in two stages — a mocked-client test (request assembly, response parsing, citation validation), then a real call against the actual provisioned endpoint and `gpt-4.1-mini` deployment, which succeeded on the first attempt with a correctly-grounded, correctly-cited answer. Billing/credit exposure (Azure's $200/30-day free-account credit) was confirmed to cover native Azure OpenAI models like `gpt-4.1-mini` *before* the live call was made, not after — see `BUGLOG.md` #41.
 
 **Cost/security note:** AWS credentials are intentionally kept **local-only** (`.env`), not deployed to Render. `/ask` has no auth check, so live AWS credentials on a public endpoint would let anyone trigger real, repeated AWS charges. Without credentials in production, the Bedrock code path stays real and demonstrable, but fails safely at $0 cost if it's ever hit on the live deployment. A single local verification call is estimated at well under a cent (Claude 3 Haiku pricing; an even cheaper model, Amazon Nova Micro, is swappable via the `BEDROCK_MODEL_ID` env var with no code change).
+
+**Cost/security note (Azure, added):** the same reasoning applies to the Azure credentials — kept local-only, not deployed to Render, since `/ask` has no auth check. Azure's `gpt-4.1-mini` is similarly cheap per call.
 
 ---
 
@@ -214,6 +234,31 @@ Verified against three independent MCP clients: an in-process protocol test (`mc
 ```bash
 python mcp_server.py
 ```
+
+---
+
+## 🌐 Language Support (multi-language chunking)
+
+~~The parser currently targets Python only.~~ — **updated:** `chunker.py` now dispatches by file extension (`chunker.SUPPORTED_EXTENSIONS`) to a per-language implementation:
+
+- **Python** (`.py`) — the original stdlib `ast`-based chunker, unchanged.
+- **JavaScript** (`.js`) — `chunker_js.py`, via [tree-sitter](https://tree-sitter.github.io/tree-sitter/). Same shape as the Python chunker: top-level functions, classes + methods (deliberate overlap, same as Python), JSDoc `/** */` comments as the docstring-equivalent, and a synthetic `<module>` chunk for unclaimed top-level lines.
+
+No new database migration was needed — `chunks.symbol_type` and every other column were already language-agnostic.
+
+**Adding a third language is now a documented, repeatable procedure**, not a from-scratch design exercise — packaged as a real Claude Code plugin:
+
+```
+add-language-support/
+├── .claude-plugin/{plugin.json, marketplace.json}
+├── skills/add-language-support/SKILL.md
+├── commands/add-language.md
+└── README.md
+```
+
+The skill documents the full procedure end-to-end — verifying a parsing strategy actually installs before committing to it, inspecting real parser node types before writing extraction code, the dispatcher-registration steps, and (non-negotiable) proving the new language works through a real DB insert + `hybrid_search()` + citation validation, not just chunker-level unit tests. It also documents a real trap found while building the JavaScript reference implementation: a doc-comment's own line range has to be explicitly "claimed," or its text silently duplicates into the synthetic module chunk.
+
+Install locally: `/plugin marketplace add ./add-language-support` then `/plugin install add-language-support@add-language-support-local`.
 
 ---
 
@@ -331,6 +376,18 @@ An exact identifier match is treated as a **hard signal**; semantic similarity i
 
 So true exact matches are pinned above the RRF results.
 
+### Why RRF tiebreak?
+
+RRF scores can tie exactly — e.g. a chunk that only the exact-match list found at rank 3, and a different chunk the semantic list found at rank 3, both score `1/(60+3)`. Without an explicit rule, Python's stable sort silently fell back to dict-insertion order, which depended on which argument list was passed to the merge function first — an accident of call-site order, not a designed rule. Fixed with an explicit three-level tiebreak: prefer the chunk more ranked lists agree on, then the chunk with the better individual rank, then fall back to chunk ID for pure determinism. Sits below exact-match pinning above — pinning still decides the hard winners; this only orders the RRF-merged remainder.
+
+### Why dispatch chunking by file extension instead of a separate pipeline per language?
+
+Adding JavaScript support could have meant a parallel ingest/retrieve pipeline per language. Instead, `chunker.py` gained one dispatch point (`SUPPORTED_EXTENSIONS`, `chunk_file()`) that every other file (`run_on_repo.py`, `ingest.py`, `retrieval.py`) already calls generically — none of them needed to change to support a second language, and none will need to change for a third. The `chunks` table schema was already language-agnostic (plain text `file_path`/`content`), so no migration was needed either.
+
+### Why `AsyncOpenAI` and not `AsyncAzureOpenAI` for the Azure provider?
+
+`AsyncAzureOpenAI` is the client most documentation describes as "the" Azure OpenAI client, and was the initial assumption. The actual endpoint provisioned for this project, though, is Azure AI Foundry's newer unified `v1` API surface (`.../openai/v1`) — plain OpenAI-API-compatible, and it explicitly doesn't want `AsyncAzureOpenAI`'s `azure_endpoint`/`api_version` kwargs. Confirmed against Microsoft's own migration docs before writing the integration, not assumed from the more commonly-documented client — see `BUGLOG.md` #41.
+
 ### Citation validation
 
 An LLM can produce a plausible-looking citation that was never retrieved.
@@ -355,13 +412,15 @@ Database queries and the Groq LLM call are I/O-bound, so they were converted to 
 | API | FastAPI (async) |
 | Server | Uvicorn |
 | Database access | async SQLAlchemy Core + asyncpg |
-| Parsing | Python AST |
+| ~~Parsing~~ *(previous)* | ~~Python AST~~ |
+| Parsing *(current)* | Python AST (`.py`); tree-sitter (`.js`, via `tree-sitter-javascript`) |
 | Embeddings | FastEmbed / BAAI/bge-small-en-v1.5 |
 | Vector dimension | 384 |
 | Database | PostgreSQL |
 | Vector search | pgvector |
 | Migrations | Alembic |
-| LLM | Groq (AsyncGroq) / openai/gpt-oss-20b, default; AWS Bedrock (converse API) as alternate provider |
+| ~~LLM~~ *(previous)* | ~~Groq (AsyncGroq) / openai/gpt-oss-20b, default; AWS Bedrock (converse API) as alternate provider~~ |
+| LLM *(current)* | Groq (AsyncGroq) / openai/gpt-oss-20b, default; AWS Bedrock (converse API) and Azure AI Foundry (`openai` AsyncOpenAI client, gpt-4.1-mini — live-verified) as alternate providers |
 | Tool protocol | MCP (Model Context Protocol) |
 | Observability | Langfuse (OpenTelemetry-based tracing) |
 | Agent orchestration | LangGraph (reasoner/critic/finalize, Postgres checkpointing, human-in-the-loop) |
@@ -384,16 +443,22 @@ codebase_assistant/
 ├── db.py                     # Async SQLAlchemy engine/session (shared by retrieval.py, ingest.py)
 ├── mcp_server.py              # MCP server exposing query_codebase as a standalone tool
 ├── ingest.py                  # Repository ingestion pipeline (async DB inserts)
-├── retrieval.py               # Hybrid retrieval + RRF (async, optional repo_id scoping)
-├── generate.py                 # Groq LLM generation (AsyncGroq)
+├── retrieval.py               # Hybrid retrieval + RRF (async, optional repo_id scoping)  [updated: explicit RRF tiebreak]
+├── generate.py                 # Groq LLM generation (AsyncGroq)  [updated: + Bedrock + Azure AI Foundry, per-request provider]
 ├── embed.py                   # Production embeddings
 ├── embed_stub.py              # Deterministic test embeddings
-├── chunker.py                 # AST-based code chunking
-├── run_on_repo.py              # Python file discovery
+├── chunker.py                 # AST-based code chunking  [updated: now the extension dispatcher (SUPPORTED_EXTENSIONS) + Python AST chunker]
+├── chunker_js.py               # [new] JavaScript chunker (tree-sitter)
+├── run_on_repo.py              # Python file discovery  [updated: find_source_files() now walks every supported extension]
 ├── validate_citations.py       # Citation validation
 │
 ├── templates/
 │   └── index.html             # Browser UI
+│
+├── add-language-support/      # Claude Code plugin: repeatable procedure for adding another language
+│   ├── .claude-plugin/        #   plugin.json + marketplace.json (self-hosting, local install)
+│   ├── skills/                #   add-language-support/SKILL.md
+│   └── commands/               #   /add-language-support:add-language <language>
 │
 ├── alembic/                   # Database migrations
 ├── tests/                      # Automated tests (pytest-asyncio for the async retrieval layer)
@@ -408,6 +473,7 @@ codebase_assistant/
 ├── requirements.txt
 ├── alembic.ini
 ├── README.md
+├── CLAUDE.md                  # Guidance for Claude Code sessions working in this repo
 └── BUGLOG.md
 ```
 
@@ -768,7 +834,7 @@ The GitHub repository URL is passed to Git as an argument rather than being inte
 
 ## ⚠️ Known Limitations
 
-- **Python only:** multi-language parsing is not implemented yet.
+- ~~**Python only:** multi-language parsing is not implemented yet.~~ — **updated:** JavaScript is now supported end-to-end (see [Language Support](#-language-support-multi-language-chunking)). Still a real, narrower limitation: only Python and JavaScript exist today, though adding a third is now a documented, repeatable procedure rather than a from-scratch design exercise.
 - **Synchronous ingestion architecture:** `/ingest` still holds the HTTP request open for the full clone + chunk + embed + insert pipeline, even though the individual DB/LLM calls inside it are now async — this is a request/response architecture limitation, not an I/O-blocking one. A background-job/status-endpoint design would address it separately.
 - **Module citations:** synthetic module chunks may have approximate line ranges.
 - **Citation UX:** invalid citation tags are removed, but the unsupported claim itself can remain.
@@ -784,8 +850,8 @@ The GitHub repository URL is passed to Git as an argument rather than being inte
 - Better duplicate suppression.
 - Metadata-aware filtering.
 - Repository/version-aware retrieval.
-- More ranking experiments.
-- Multi-language parsing with tree-sitter.
+- ~~More ranking experiments.~~ — **partially done:** RRF's tie-handling is now explicit and deterministic (see [Why RRF tiebreak?](#why-rrf-tiebreak)). Broader ranking experiments (weighting, learned re-ranking) are still open.
+- ~~Multi-language parsing with tree-sitter.~~ — **done for JavaScript**, see [Language Support](#-language-support-multi-language-chunking). Other languages still open — now a repeatable procedure via the `add-language-support` skill/plugin.
 
 ### Ingestion
 
@@ -828,6 +894,7 @@ The GitHub repository URL is passed to Git as an argument rather than being inte
 - ~~AWS Bedrock as an alternate/additional LLM provider alongside Groq~~ — implemented; live verification pending AWS account activation (see [LLM Providers](#-llm-providers)).
 - ~~Langfuse tracing for prompts/retrievals/outputs~~ — implemented and confirmed working against a real Langfuse Cloud project (see [Observability](#-observability-langfuse)).
 - ~~LangGraph, if the actual control flow shows real branching/routing worth modeling as a graph~~ — implemented as a real tool-calling agent, verified live (see [LangGraph Agent](#-langgraph-agent)).
+- ~~Azure AI Foundry as a third alternate LLM provider~~ — implemented and **live-verified** (not pending, unlike Bedrock) — see [LLM Providers](#-llm-providers).
 
 ---
 
@@ -849,9 +916,12 @@ It demonstrates:
 - **REST API development**
 - **async Python (asyncio, async SQLAlchemy/asyncpg)**
 - **Model Context Protocol (MCP) server implementation**
-- **multi-provider LLM integration (Groq + AWS Bedrock)**
+- ~~**multi-provider LLM integration (Groq + AWS Bedrock)**~~ *(previous)*
+- **multi-provider LLM integration (Groq + AWS Bedrock + Azure AI Foundry)** *(current)*
 - **stateful agent orchestration (LangGraph) with tool-calling, human-in-the-loop, and multi-agent hand-off**
 - **LLM observability (Langfuse, OpenTelemetry-based tracing)**
+- **multi-language AST/parser tooling (tree-sitter)**
+- **Claude Code plugin/skill development**
 - **Docker containerization**
 - **CI/CD**
 - **cloud deployment (Render + AWS EC2/RDS)**
@@ -860,6 +930,8 @@ It demonstrates:
 
 The retrieval system was also evaluated through failure cases, leading to a deliberate change from pure RRF to exact-match pinning.
 
+*(Added later:)* The same approach was applied again when RRF score ties were found to fall back to undefined insertion-order behavior — resolved with an explicit, deterministic tiebreak rule.
+
 That makes the project an example of engineering based on observed system behavior rather than simply implementing a predetermined architecture.
 
 ---
@@ -867,6 +939,8 @@ That makes the project an example of engineering based on observed system behavi
 ## 🎯 Interview Summary
 
 > **Codebase Q&A Assistant** is a production-deployed RAG system for querying Python repositories. I built AST-based chunking to preserve semantic code structures, generated 384-dimensional FastEmbed embeddings, and stored them in PostgreSQL with pgvector. I implemented hybrid retrieval combining exact symbol matching with semantic vector search and RRF, then pinned exact matches after testing showed pure RRF could produce incorrect rankings. Retrieved source is passed to an LLM, and citations are validated against the actual retrieved chunks. I later converted the DB and LLM layers to async (asyncpg/async SQLAlchemy, AsyncGroq), correctly distinguishing I/O-bound calls worth converting from CPU-bound work that async wouldn't help; wrapped the retrieval layer as an MCP tool usable by any MCP-compatible client, verified against three independent MCP clients including Claude Desktop; added AWS Bedrock as a second, per-request-selectable LLM provider alongside Groq; instrumented the whole pipeline with Langfuse; and built a real tool-calling agent in LangGraph on top of all of it — a reasoner that decides via genuine function-calling whether to search again or answer, a separate critic agent that reviews substance and hands back specific feedback, and human-in-the-loop for repeated citation failures backed by Postgres checkpointing so it survives real restarts. The most valuable finding in the whole project came from live-testing that agent against a real API key rather than trusting my mocked tests: a bug where the model's tool results only said "found N results" without the actual code was completely invisible to every mocked test (none of them depended on the model reading real content), and only surfaced when a real model, honestly trying to answer, correctly reported it didn't have content it had technically retrieved. The Bedrock path is code-complete and verified against a mocked AWS client — live verification is honestly still pending AWS account activation. The application is exposed through FastAPI, containerized with Docker, tested with GitHub Actions, deployed on Render, and includes a custom browser UI. Separately, I deployed the same application to AWS (EC2 + RDS, with RDS locked down via security-group-to-security-group referencing rather than IP allowlisting) as a scoped infrastructure exercise to close the AWS/DevOps gap in target job descriptions.
+>
+> **Update:** three further additions since the above. First, I found the RRF merge had no explicit rule for exact score ties — it silently depended on dict-insertion order — and replaced it with a deterministic three-level rule (list agreement, then best rank, then ID), verified with targeted unit tests constructing deliberate ties. Second, I extended chunking beyond Python to JavaScript via tree-sitter, through a single extension-dispatch point that required zero changes to the downstream ingestion/retrieval code, and packaged the underlying procedure as a real, schema-verified Claude Code plugin so adding a third language is now a documented, repeatable process rather than a from-scratch exercise. Third, I added Azure AI Foundry as a third LLM provider — and unlike Bedrock, verified it with an actual live call against the real endpoint, not just a mocked client; getting there meant catching my own incorrect assumption that the standard `AsyncAzureOpenAI` client would work, when the endpoint actually provisioned needed the newer unified `AsyncOpenAI`-with-`base_url` pattern instead — confirmed against Microsoft's own docs before writing the integration.
 
 ---
 
@@ -875,7 +949,8 @@ That makes the project an example of engineering based on observed system behavi
 For the detailed engineering history, see:
 
 - `BUGLOG.md` — full debugging/build history.
-- `PROJECT_RECORD.md` — architecture, decisions, deployment history, limitations, and interview notes.
+- ~~`PROJECT_RECORD.md` — architecture, decisions, deployment history, limitations, and interview notes.~~ *(previous, incorrect path)*
+- **Corrected path:** `revision/codebase_qa_complete_master_project_record (1).md` — architecture, decisions, deployment history, limitations, and interview notes (Steps 0–7). Kept out of version control (`revision/` is git-ignored) as personal interview-prep material, alongside the AWS deployment write-up in the same directory.
 
 ---
 
