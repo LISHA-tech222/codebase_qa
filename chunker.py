@@ -1,17 +1,27 @@
 """
 Minimal AST chunker — demo version.
 
-Walks a Python file's AST and extracts each top-level function and class
-as its own chunk, with docstring + line range.
+Walks a source file's AST and extracts each top-level function and class
+as its own chunk, with docstring + line range. Dispatches by file
+extension to a per-language implementation (see SUPPORTED_EXTENSIONS);
+chunk_file() itself stays language-agnostic so callers (ingest.py,
+run_on_repo.py) never need to know which parser handled a given file.
 
 NOTE: this deliberately only handles top-level defs for now (not nested
-methods inside classes) so you can see the raw shape before deciding
-how to handle nesting yourself.
+methods inside classes, nested functions, etc.) so you can see the raw
+shape before deciding how to handle nesting yourself. True for every
+per-language implementation, not just Python's.
 """
 
 import ast
 import json
 from dataclasses import dataclass, asdict
+
+# Added when JavaScript support was added (see skills/add-language-support).
+# The single source of truth for "what can chunk_file() actually handle" --
+# run_on_repo.py's file walker imports this instead of hardcoding its own
+# extension list, so the two can't silently drift apart.
+SUPPORTED_EXTENSIONS = {".py", ".js"}
 
 
 @dataclass
@@ -67,6 +77,22 @@ def _is_trivial_body(node) -> bool:
 
 
 def chunk_file(file_path: str) -> list[Chunk]:
+    """Dispatches to the right per-language chunker by file extension."""
+    if file_path.endswith(".py"):
+        return _chunk_python_file(file_path)
+    if file_path.endswith(".js"):
+        # Lazy import: keeps tree-sitter an optional-at-parse-time dependency
+        # for anyone only ever chunking Python, and sidesteps a top-level
+        # circular import (chunker_js.py imports Chunk from this module).
+        from chunker_js import chunk_js_file
+        return chunk_js_file(file_path)
+    raise ValueError(
+        f"Unsupported file extension for chunking: {file_path!r} "
+        f"(supported: {sorted(SUPPORTED_EXTENSIONS)})"
+    )
+
+
+def _chunk_python_file(file_path: str) -> list[Chunk]:
     with open(file_path, "r") as f:
         source = f.read()
 

@@ -1,0 +1,19 @@
+{
+  "name": "add-language-support",
+  "displayName": "Add Language Support",
+  "version": "1.0.0",
+  "description": "Adds a skill that walks through adding a new source-code language to codebase_assistant's AST-based chunking/ingestion pipeline (chunker.py, run_on_repo.py, ingest.py) end-to-end: parsing strategy, chunker implementation, tests, and real DB/retrieval verification.",
+  "author": {
+    "name": "LISHA-tech222"
+  },
+  "homepage": "https://github.com/LISHA-tech222/codebase_qa",
+  "repository": "https://github.com/LISHA-tech222/codebase_qa",
+  "license": "MIT",
+  "keywords": [
+    "codebase-assistant",
+    "chunking",
+    "tree-sitter",
+    "ingestion",
+    "multi-language"
+  ]
+}

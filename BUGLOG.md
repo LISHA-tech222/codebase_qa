@@ -595,3 +595,68 @@ Format: what broke → what I assumed was wrong → what was actually wrong → 
       `(file_path, start_line, end_line)` set membership, not by result
       order, so the tiebreak reordering the merged list cannot affect
       citation validation.
+
+38. **Asked to "package the existing add-language-support skill into a plugin" — it didn't exist anywhere**
+    → this task's own framing assumed prior work existed; treated that as
+      a claim to verify, not a given
+    → searched everywhere it could plausibly live: this repo (no `.claude/`
+      directory at all), `~/.claude/skills/` (only the default bundled
+      skills under `synced/`, nothing custom), every other project
+      directory on the machine, `~/.claude/plugins/` -- genuinely nothing,
+      confirmed via direct filesystem search rather than one quick look
+    → asked the user directly rather than fabricating a plausible-looking
+      skill and presenting it as "the existing one" -- they confirmed:
+      build it fresh, then package it. Proceeded on that explicit basis,
+      not a guess.
+
+39. **JS chunker: a top-level JSDoc comment's text was duplicated into the synthetic `<module>` chunk**
+    → assumed extracting a `/** ... */` comment as a declaration's
+      docstring was the whole fix needed (mirroring how Python's
+      `ast.get_docstring()` pulls a docstring that's genuinely *inside*
+      the function/class node's own line range)
+    → actually a JS doc-comment is a separate SIBLING node in the parse
+      tree, sitting just *before* the declaration it documents -- its own
+      line range was never added to `claimed_ranges`, so those lines
+      stayed "unclaimed" and the exact same text leaked a second time into
+      the module chunk's content, alongside being correctly extracted as
+      the real chunk's `docstring`
+    → caught by actually inspecting the module chunk's `content` against
+      a real fixture (`tests/fixtures/sample.js`) before writing any
+      tests, not by assuming the extraction was complete once the
+      docstring field looked right -- `retry`'s and `Config.load`'s JSDoc
+      text were both visibly present in the module chunk's dump
+    → fixed by having `_extract_jsdoc()` return the comment node's own
+      line range alongside the docstring text, and claiming that range
+      wherever it's used (top-level function, top-level `const fn = () =>`,
+      and class declarations -- method-level JSDoc needed no such fix
+      since it's already inside the class's own claimed range). Added a
+      regression test (`test_jsdoc_comment_not_duplicated_into_module_chunk`)
+      asserting the specific doc text does NOT appear in the module chunk.
+
+40. **Plugin/marketplace install and post-install skill-invocation verification cannot be done by the agent in this session**
+    → the task asked to install the plugin locally via the marketplace
+      file and confirm the skill is invokable -- assumed this might be
+      scriptable somehow (a settings.json field, a CLI flag) before
+      claiming otherwise
+    → researched directly (not guessed): confirmed there is no `claude`
+      CLI binary on this machine's PATH (`which claude` / `Get-Command
+      claude` both fail -- this session runs inside a VSCode-native
+      extension, not the standalone terminal CLI), and there is no tool
+      available to this agent that invokes interactive slash commands like
+      `/plugin marketplace add` or `/plugin install` on the user's behalf.
+      The only documented, confirmed install path is the human typing
+      those two commands into the chat themselves
+    → also empirically confirmed (not just inferred from docs) that a
+      skill sitting on disk inside an unregistered plugin directory is
+      genuinely not invokable: calling the Skill tool with both
+      `add-language-support` and the plugin-namespaced
+      `add-language-support:add-language-support` before any install both
+      returned `Unknown skill` errors
+    → not silently worked around: built and verified everything within
+      reach without the install (skill content, plugin.json/marketplace.json
+      schema verified against the real docs rather than assumed, the
+      underlying language-support feature proven end-to-end against the
+      real DB/retrieval/citation path -- see the language-addition entries
+      around this one), then handed off the two exact commands to the user
+      to run themselves, with exactly what to check afterward, rather than
+      claiming "installed and verified" without being able to prove it.

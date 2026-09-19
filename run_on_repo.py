@@ -7,18 +7,29 @@ Run chunker.py across an entire repo directory. Logs:
 
 import sys
 import os
-from chunker import chunk_file
+from chunker import chunk_file, SUPPORTED_EXTENSIONS
 
 LARGE_FN_THRESHOLD = 50  # lines — flag anything bigger for manual review
 
 
-def find_py_files(root):
+def find_source_files(root, extensions=SUPPORTED_EXTENSIONS):
+    """Walk root, yielding every file whose extension chunk_file() can
+    handle. extensions defaults to everything chunker.py currently
+    supports, kept in one place (chunker.SUPPORTED_EXTENSIONS) so this
+    walker and the dispatcher can't silently drift apart."""
     for dirpath, _, filenames in os.walk(root):
         if ".git" in dirpath:
             continue
         for fn in filenames:
-            if fn.endswith(".py"):
+            if any(fn.endswith(ext) for ext in extensions):
                 yield os.path.join(dirpath, fn)
+
+
+def find_py_files(root):
+    """Backward-compatible Python-only alias — this file's own main()
+    below only ever analyzed Python (large-function/empty-body checks
+    below aren't language-aware yet), so it keeps calling this name."""
+    return find_source_files(root, extensions={".py"})
 
 
 def main(root):

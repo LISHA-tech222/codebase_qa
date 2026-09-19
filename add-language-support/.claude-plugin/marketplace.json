@@ -1,0 +1,15 @@
+{
+  "name": "add-language-support-local",
+  "owner": {
+    "name": "LISHA-tech222",
+    "url": "https://github.com/LISHA-tech222"
+  },
+  "description": "Local marketplace for installing the add-language-support plugin directly from this checked-out directory, for local development/testing rather than a published marketplace repo.",
+  "plugins": [
+    {
+      "name": "add-language-support",
+      "source": ".",
+      "description": "Skill: add support for a new source-code language to codebase_assistant's chunking/ingestion pipeline, end-to-end."
+    }
+  ]
+}

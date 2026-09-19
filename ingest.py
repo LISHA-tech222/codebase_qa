@@ -13,7 +13,7 @@ import sys
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 
-from run_on_repo import find_py_files
+from run_on_repo import find_source_files
 from chunker import chunk_file
 from embed import embed_chunks
 from db import async_session
@@ -23,7 +23,7 @@ async def ingest(repo_root: str, repo_id: str):
     inserted, skipped, failed = 0, 0, 0
 
     async with async_session() as session:
-        for path in find_py_files(repo_root):
+        for path in find_source_files(repo_root):
             try:
                 chunks = chunk_file(path)
             except Exception as e:

@@ -18,3 +18,5 @@ langchain-mcp-adapters
 langgraph-checkpoint-postgres
 psycopg[binary]
 langchain-groq
+tree-sitter==0.26.0
+tree-sitter-javascript==0.25.0
