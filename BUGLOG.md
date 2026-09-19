@@ -553,3 +553,45 @@ Format: what broke → what I assumed was wrong → what was actually wrong → 
       a real pip install -r requirements.txt into a completely fresh venv(matching what CI/Render actually do) -- resolved cleanly, then ran
       the full test suite in that same fresh venv: 20/21 passing, same
       pre-existing unrelated failure as always
+
+37. **`_rrf_merge` had no explicit tiebreak rule -- equal-score chunks silently
+    ordered by dict/argument insertion order**
+    → not a runtime crash, so nothing "broke" in the traditional sense, but the
+      gap was real: two chunks with the exact same RRF score (e.g. one hitting
+      only the exact-match list at rank 3 and another hitting only the
+      semantic list at rank 3, both scoring 1/(60+3)) were ordered purely by
+      which of `remaining_exact`/`semantic_ids` got passed to `_rrf_merge`
+      first and which id happened to get inserted into the `scores` dict
+      first -- an accident of argument order and Python's stable sort, not a
+      designed rule. Swapping the two arguments' order, or reordering how a
+      list was built upstream, could silently reorder tied results between
+      otherwise-identical requests
+    → confirmed this was a real, reachable case (not just theoretical) by
+      constructing exact ties directly against `_rrf_merge` with `RRF_K`
+      monkeypatched to 0 for clean fractions: two ids at the same score via
+      different rank/list combinations, verified the pre-fix code's ordering
+      really did depend on insertion order
+    → fixed by adding an explicit, three-level deterministic tiebreak used
+      only when RRF scores are exactly equal: (1) prefer the chunk appearing
+      in MORE ranked lists -- both exact and semantic agreeing on a chunk is
+      a stronger signal than either alone, even at equal score; (2) prefer
+      the better (lowest) individual rank the chunk achieved in any list it
+      appeared in; (3) fall back to `chunk_id` ascending as a pure-determinism
+      floor, since two chunks truly tied on every real signal need *some*
+      reproducible order that doesn't depend on caller argument order. This
+      sits below the existing tier-1 exact-match pinning (bug #5) -- pinning
+      still governs which chunks are "hard" winners; this tiebreak only
+      resolves ordering *within* the RRF-merged remainder
+    → verified with 3 new unit tests directly against `_rrf_merge` (no DB
+      needed, since RRF merge is pure Python): multi-list agreement beats a
+      better single-list rank, best-rank breaks a tie when appearance counts
+      match, and id-ascending breaks a fully-tied case. Also re-ran the full
+      existing test suite before and after (via `git stash`) to confirm the
+      6 pre-existing failures (`test_graph.py`'s async tests +
+      `test_retrieval.py`'s two DB-fixture tests, all a known pytest-asyncio
+      cross-module event-loop artifact per bugs #12/#19/#32) are identical on
+      both the pre- and post-change code -- this fix introduces zero new
+      failures. `validate_citations.py` matches citations by
+      `(file_path, start_line, end_line)` set membership, not by result
+      order, so the tiebreak reordering the merged list cannot affect
+      citation validation.

@@ -27,6 +27,12 @@ Step 1 prep (MCP): repo_id is now an optional filter across all three
 queries. Default None preserves the exact unfiltered behavior app.py's
 /ask route already relies on — app.py is untouched. The MCP tool
 (query_codebase) will pass a real repo_id to scope results to one repo.
+
+Tie handling: two chunks can land on the exact same RRF score (e.g. one
+chunk appearing only in the exact-match list at rank 3, another only in
+the semantic list at rank 3 — both score 1/(60+3)). See _rrf_merge's
+docstring for the explicit tiebreak rule (multi-list agreement, then
+best individual rank, then chunk_id) — bug log #37.
 """
 
 from sqlalchemy import text
@@ -84,12 +90,41 @@ async def _semantic_search(session, query_embedding: list[float], repo_id: str |
 
 
 def _rrf_merge(*ranked_id_lists) -> list[int]:
-    """Combine multiple rank-ordered id lists into one RRF-scored ranking."""
+    """
+    Combine multiple rank-ordered id lists into one RRF-scored ranking.
+
+    Tiebreak (when two chunks land on the exact same RRF score — e.g. one
+    chunk appearing only in the exact-match list at rank 3 and another
+    appearing only in the semantic list at rank 3 both score 1/(60+3)):
+      1. RRF score, descending (primary — unchanged).
+      2. Number of lists the chunk appears in, descending. A chunk both
+         lists agree on is a stronger signal than one only one list found,
+         even at an equal score.
+      3. Best (lowest/earliest) rank the chunk achieved in any list it
+         appeared in, ascending. Rewards a strong placement in one list
+         over a mediocre placement echoed nowhere else.
+      4. chunk_id, ascending. Pure determinism for the (rare) case two
+         chunks are truly identical on all of the above — without this,
+         Python's stable sort would fall back to dict insertion order,
+         which silently depends on the caller's argument order rather
+         than being an explicit, reproducible rule.
+    Without an explicit tiebreak, previously-tied results could reorder
+    between requests just because the exact/semantic lists were assembled
+    or passed in a different order.
+    """
     scores: dict[int, float] = {}
+    appearances: dict[int, int] = {}
+    best_rank: dict[int, int] = {}
     for ranked_ids in ranked_id_lists:
         for rank, chunk_id in enumerate(ranked_ids, start=1):
             scores[chunk_id] = scores.get(chunk_id, 0.0) + 1.0 / (RRF_K + rank)
-    return sorted(scores.keys(), key=lambda cid: -scores[cid])
+            appearances[chunk_id] = appearances.get(chunk_id, 0) + 1
+            if chunk_id not in best_rank or rank < best_rank[chunk_id]:
+                best_rank[chunk_id] = rank
+    return sorted(
+        scores.keys(),
+        key=lambda cid: (-scores[cid], -appearances[cid], best_rank[cid], cid),
+    )
 
 @observe(as_type="retriever")
 async def hybrid_search(query: str, query_embedding: list[float], repo_id: str | None = None, top_k: int = 10):
