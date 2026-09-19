@@ -1,7 +1,9 @@
 """
 Send retrieved chunks to an LLM, require citations in file_path:start-end
-format. Two providers are supported, chosen per-request via the
-`provider` argument:
+format. Three providers are supported, chosen per-request via the
+`provider` argument -- no env-var toggle and no auto-fallback between
+them; the caller picks one explicitly on every call, same rule for all
+three:
 
 - "groq" (default): Groq's free tier, openai/gpt-oss-20b, via AsyncGroq.
 - "bedrock": AWS Bedrock, via boto3's converse() API. boto3 has no
@@ -11,14 +13,28 @@ format. Two providers are supported, chosen per-request via the
   stray psycopg2 call would have before Step 0. Verified this
   offloading genuinely doesn't block (see BUGLOG / master record
   Step 2).
+- "azure": Azure OpenAI (via Azure AI Foundry), gpt-4.1-mini, using the
+  `openai` package's AsyncOpenAI client pointed at the resource's v1
+  endpoint (base_url=".../openai/v1") -- NOT the AsyncAzureOpenAI
+  subclass. That subclass wants azure_endpoint/api_version kwargs for
+  the older, version-pinned Azure OpenAI API; the endpoint actually
+  provisioned for this project is the newer unified Foundry v1 surface,
+  which is plain OpenAI-API-compatible and needs neither. Confirmed
+  directly against openai==3.16.2's real AsyncOpenAI signature and a
+  real Microsoft Learn doc comparison before writing this, not assumed
+  from an older SDK version's docs (see BUGLOG for the version details --
+  this package jumped as far as 1.x -> 3.x, a genuinely different
+  surface in places, e.g. AsyncOpenAI.__init__ gained several new
+  Azure/Foundry-specific kwargs like `provider` and `workload_identity`
+  that don't exist in the 1.x series most docs still describe).
 
-Why converse() over invoke_model(): converse() gives one standardized
-request/response shape across Bedrock model providers (Anthropic, Meta,
-Cohere, etc.) -- switching models later is a config change, not a
-rewrite of provider-specific body parsing. invoke_model() would be the
-right call only if a target model isn't yet supported by converse(), or
-a model-specific parameter isn't exposed by the unified API -- neither
-applies here.
+Why converse() over invoke_model() for Bedrock: converse() gives one
+standardized request/response shape across Bedrock model providers
+(Anthropic, Meta, Cohere, etc.) -- switching models later is a config
+change, not a rewrite of provider-specific body parsing. invoke_model()
+would be the right call only if a target model isn't yet supported by
+converse(), or a model-specific parameter isn't exposed by the unified
+API -- neither applies here.
 """
 
 import os
@@ -26,11 +42,13 @@ import asyncio
 
 import boto3
 from groq import AsyncGroq
+from openai import AsyncOpenAI
 from langfuse import observe
 
 GROQ_MODEL = "openai/gpt-oss-20b"  # solid general-purpose free-tier model
 BEDROCK_MODEL_ID = os.environ.get("BEDROCK_MODEL_ID", "anthropic.claude-3-haiku-20240307-v1:0")
 BEDROCK_REGION = os.environ.get("AWS_REGION", "us-east-1")
+AZURE_OPENAI_DEPLOYMENT = os.environ.get("AZURE_OPENAI_DEPLOYMENT", "gpt-4.1-mini")
 
 SYSTEM_PROMPT = """You are a codebase Q&A assistant. You will be given a \
 question and a set of code chunks retrieved from the repository, each \
@@ -69,8 +87,10 @@ async def answer_question(question: str, chunks: list[dict], provider: str = "gr
         raw_answer = await _answer_groq(question, context)
     elif provider == "bedrock":
         raw_answer = await _answer_bedrock(question, context)
+    elif provider == "azure":
+        raw_answer = await _answer_azure(question, context)
     else:
-        raise ValueError(f"Unknown provider: {provider!r}. Expected 'groq' or 'bedrock'.")
+        raise ValueError(f"Unknown provider: {provider!r}. Expected 'groq', 'bedrock', or 'azure'.")
 
     # Strip any citation the model fabricated that doesn't correspond to
     # a chunk we actually retrieved and gave it — see validate_citations.py
@@ -118,3 +138,30 @@ def _bedrock_converse_sync(question: str, context: str) -> str:
 @observe(as_type="generation")
 async def _answer_bedrock(question: str, context: str) -> str:
     return await asyncio.to_thread(_bedrock_converse_sync, question, context)
+
+
+@observe(as_type="generation")
+async def _answer_azure(question: str, context: str) -> str:
+    """
+    AsyncOpenAI (not AsyncAzureOpenAI) pointed at the Foundry resource's
+    v1 endpoint -- see the module docstring for why. `model` is the
+    deployment name (AZURE_OPENAI_DEPLOYMENT), not an OpenAI model id;
+    Azure routes by deployment name, same role BEDROCK_MODEL_ID plays
+    for Bedrock above.
+    """
+    client = AsyncOpenAI(
+        api_key=os.environ["AZURE_OPENAI_API_KEY"],
+        base_url=os.environ["AZURE_OPENAI_ENDPOINT"],
+    )
+    response = await client.chat.completions.create(
+        model=AZURE_OPENAI_DEPLOYMENT,
+        max_tokens=1000,
+        messages=[
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {
+                "role": "user",
+                "content": f"Retrieved code:\n\n{context}\n\nQuestion: {question}",
+            },
+        ],
+    )
+    return response.choices[0].message.content

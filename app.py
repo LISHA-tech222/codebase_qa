@@ -60,7 +60,7 @@ async def ingest_repo(req: IngestRequest):
 class AskRequest(BaseModel):
     question: str
     top_k: int = 5
-    provider: str = "groq"  # "groq" or "bedrock" -- Step 2
+    provider: str = "groq"  # "groq", "bedrock", or "azure"
 
 @app.post("/ask")
 @observe()

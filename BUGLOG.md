@@ -660,3 +660,95 @@ Format: what broke → what I assumed was wrong → what was actually wrong → 
       around this one), then handed off the two exact commands to the user
       to run themselves, with exactly what to check afterward, rather than
       claiming "installed and verified" without being able to prove it.
+
+41. **Assumed `AsyncAzureOpenAI` was the right client for the Azure branch -- it wasn't, for the endpoint actually provisioned**
+    → assumed the standard, most-documented Azure OpenAI Python pattern
+      (`AsyncAzureOpenAI(azure_endpoint=..., api_key=..., api_version=...)`)
+      would be correct, since that's the client purpose-built for "Azure
+      OpenAI" in most docs/training-era material
+    → actually the endpoint already provisioned for this project
+      (`https://<resource>.services.ai.azure.com/openai/v1`) is Microsoft's
+      newer unified Foundry v1 API surface, which is plain
+      OpenAI-API-compatible and explicitly does NOT want `api_version`/
+      `azure_endpoint` -- the documented current pattern for it is the
+      plain `AsyncOpenAI` class with `base_url` set to that same `.../v1`
+      address. Confirmed directly against Microsoft Learn's migration doc
+      before writing any code, not carried over from memory
+    → separately verified the `openai` Python package itself before
+      trusting any of this: `pip install openai` resolves to 3.16.2, a
+      major-version jump from the 1.x series most documentation (including
+      the docs used to confirm the point above) still describes.
+      Confirmed via `inspect.signature()` on the real installed
+      `AsyncOpenAI.__init__` and `client.chat.completions.create` that the
+      `api_key`/`base_url` constructor kwargs and `model`/`messages`/
+      `stream` call kwargs this code depends on are still present in
+      3.16.2 (the constructor also gained several new Azure/Foundry-
+      specific kwargs like `provider` and `workload_identity` not in the
+      1.x series -- unused here, but confirms this really is a materially
+      different surface, not just a version-number bump)
+    → fixed by using `AsyncOpenAI(api_key=AZURE_OPENAI_API_KEY,
+      base_url=AZURE_OPENAI_ENDPOINT)` in `generate.py::_answer_azure`,
+      not `AsyncAzureOpenAI`. Verified in two stages before calling this
+      done: (1) a mocked-client test confirming request assembly (right
+      api_key/base_url on the client, right deployment name as `model`)
+      and response parsing + citation validation all work together
+      (real citation kept, fabricated one stripped) -- same proof pattern
+      as Bedrock's BUGLOG #20; (2) a REAL live call against the actual
+      provisioned endpoint and `gpt-4.1-mini` deployment, which succeeded
+      on the first attempt and returned a correctly-grounded,
+      correctly-cited answer (`[utils.py:10-15]`) that survived real
+      (not mocked) citation validation.
+
+## Design decision -- Azure AI Foundry as a third `provider` option
+
+- **Model: `gpt-4.1-mini`**, per explicit direction after reviewing real,
+  current (verified against Microsoft's own pricing page and cross-checked
+  Microsoft Q&A pricing threads, not assumed) alternatives. `GPT-4o-mini`
+  -- the original suggestion -- no longer appears in Azure OpenAI's current
+  model catalog at all as of this check; it's been superseded by the
+  GPT-5.x line. Of the two current low-cost candidates surfaced
+  (`GPT-5-nano` at $0.05/$0.40 per 1M tokens, positioned by Microsoft for
+  classification/tagging/routing rather than open-ended generation; and
+  `GPT-5-mini` at $0.25/$2.00 per 1M tokens, general-purpose with
+  reasoning/tool-calling), `gpt-4.1-mini` was the deployment actually
+  provisioned and confirmed live-working.
+- **SDK: `openai` package's `AsyncOpenAI` (base_url-pointed), not
+  `azure-ai-inference` and not `AsyncAzureOpenAI`.** Same "raw vendor SDK,
+  not a framework wrapper" choice already made for Bedrock (`boto3` over
+  LangChain) -- `openai` is the vendor-native client for this exact model
+  family, same role `boto3` plays for Bedrock. `AsyncAzureOpenAI`
+  specifically was considered and rejected once the provisioned endpoint
+  turned out to be the newer unified Foundry v1 surface rather than the
+  classic versioned Azure OpenAI API -- see bug #41 above for the concrete
+  verification trail, not just a stated preference.
+- **No env-var toggle, no auto-fallback between providers.** `provider` is
+  a per-request argument on `answer_question()`/`/ask`, same as Bedrock.
+  `AZURE_OPENAI_API_KEY`/`AZURE_OPENAI_ENDPOINT`/`AZURE_OPENAI_DEPLOYMENT`
+  env vars configure *how* to call Azure when `provider="azure"` is
+  chosen -- they never cause Azure to be silently selected on their own,
+  matching `BEDROCK_MODEL_ID`'s existing role for Bedrock exactly.
+- **Non-streaming, matching Groq/Bedrock's actual existing behavior.**
+  The task that prompted this referenced a `stream_answer()` function and
+  "matching established streaming behavior" -- neither exists. The real
+  function is `generate.py::answer_question()`, and Groq/Bedrock both
+  make one blocking call and return a complete string; there is no
+  streaming anywhere in this pipeline yet. Confirmed this directly against
+  the file before writing anything, flagged it, and the explicit decision
+  (confirmed) was to keep the Azure branch consistent with the *real*
+  existing pattern (one non-streaming call) rather than introduce
+  streaming for the first time as a side effect of this change.
+- **Billing/credit verification done before any live call, not after --
+  a real cost-risk check, not just a technical one.** Confirmed (web
+  search against current sources, not assumed) that Azure's $200/30-day
+  free-account credit does apply to Azure OpenAI Service usage on native
+  models. The specific trap flagged going in -- Azure AI Foundry's unified
+  model catalog surfacing third-party/partner models (e.g. Claude,
+  Llama) alongside native Azure OpenAI models, with partner-model usage
+  not always covered by free credits -- applies to those partner catalog
+  models specifically, not to native Azure OpenAI models like
+  `gpt-4.1-mini`; picking a native model sidesteps that exact trap.
+  Separately, the live call succeeding on the first attempt (bug #41)
+  confirmed there was no additional quota/access-approval gate blocking
+  this specific account/deployment either -- unlike Bedrock, which is
+  still genuinely blocked on pending AWS account verification (BUGLOG
+  #21), Azure hit no such blocker here.
