@@ -1,0 +1,362 @@
+[
+  {
+    "id": "q01",
+    "query": "What does the ingest function do?",
+    "expected_answer": "It walks a repo's source files, chunks each one with chunk_file(), embeds the chunks with embed_chunks(), and inserts each chunk into the chunks table, skipping duplicates via ON CONFLICT ON CONSTRAINT uq_chunks_identity DO NOTHING.",
+    "expected_chunk_ids": ["ingest.py:22-88"],
+    "language": "python",
+    "query_type": "what-does",
+    "notes": "core ingestion entrypoint"
+  },
+  {
+    "id": "q02",
+    "query": "Where is the FastAPI app object created?",
+    "expected_answer": "In app.py, `app = FastAPI(title=\"Codebase Q&A Assistant\")`.",
+    "expected_chunk_ids": ["app.py:24-24"],
+    "language": "python",
+    "query_type": "where-is",
+    "notes": "trivial symbol lookup"
+  },
+  {
+    "id": "q03",
+    "query": "What does _is_trivial_body check for?",
+    "expected_answer": "It inspects the actual AST body of a function/method (after stripping a leading docstring) and flags it as trivial only if the remaining body is empty, a bare `pass`, a bare `...`, or a single `raise NotImplementedError`.",
+    "expected_chunk_ids": ["chunker.py:43-76"],
+    "language": "python",
+    "query_type": "what-does",
+    "notes": null
+  },
+  {
+    "id": "q04",
+    "query": "Where is RRF_K defined and what value does it use?",
+    "expected_answer": "RRF_K is defined in retrieval.py and set to 60, the standard default from the original RRF paper.",
+    "expected_chunk_ids": ["retrieval.py:43-43"],
+    "language": "python",
+    "query_type": "where-is",
+    "notes": null
+  },
+  {
+    "id": "q05",
+    "query": "What routes does app.py expose?",
+    "expected_answer": "Three routes: GET /, POST /ingest, and POST /ask.",
+    "expected_chunk_ids": ["app.py:27-29", "app.py:37-57", "app.py:65-89"],
+    "language": "python",
+    "query_type": "what-does",
+    "notes": null
+  },
+  {
+    "id": "q06",
+    "query": "How does embed_query decide whether to use the stub embedder or the real model?",
+    "expected_answer": "It checks the module-level _USE_STUB flag (set from EMBEDDINGS_PROVIDER=='stub' at import time); if true it calls stub_embed(text), otherwise it lazily loads the FastEmbed model via _get_model() and embeds the text.",
+    "expected_chunk_ids": ["embed.py:55-63", "embed.py:26-26"],
+    "language": "python",
+    "query_type": "how-does",
+    "notes": null
+  },
+  {
+    "id": "q07",
+    "query": "What does CITATION_RE match?",
+    "expected_answer": "A regex matching citation tags of the form [file_path:start-end], e.g. [utils.py:10-15].",
+    "expected_chunk_ids": ["validate_citations.py:10-10"],
+    "language": "python",
+    "query_type": "what-does",
+    "notes": null
+  },
+  {
+    "id": "q08",
+    "query": "Where is the query_codebase MCP tool defined?",
+    "expected_answer": "In mcp_server.py, decorated with @mcp.tool().",
+    "expected_chunk_ids": ["mcp_server.py:45-68"],
+    "language": "python",
+    "query_type": "where-is",
+    "notes": null
+  },
+  {
+    "id": "q09",
+    "query": "What is SUPPORTED_EXTENSIONS in chunker.py?",
+    "expected_answer": "A set containing the file extensions chunk_file() can handle: {'.py', '.js'}.",
+    "expected_chunk_ids": ["chunker.py:24-24"],
+    "language": "python",
+    "query_type": "what-does",
+    "notes": null
+  },
+  {
+    "id": "q10",
+    "query": "How does db.py handle the sslmode parameter from DATABASE_URL?",
+    "expected_answer": "It strips sslmode out of the URL's query string and, if it's one of require/verify-ca/verify-full, translates it into connect_args={\"ssl\": True} for asyncpg, since asyncpg doesn't accept sslmode directly.",
+    "expected_chunk_ids": ["db.py:36-44"],
+    "language": "python",
+    "query_type": "how-does",
+    "notes": null
+  },
+  {
+    "id": "q11",
+    "query": "What does strip_invalid_citations do to a false claim with a fabricated citation?",
+    "expected_answer": "It only removes the invalid citation bracket tag itself; it does not remove or flag the surrounding false claim text, so the sentence still reads as if it were properly cited.",
+    "expected_chunk_ids": ["validate_citations.py:43-73"],
+    "language": "python",
+    "query_type": "what-does",
+    "notes": null
+  },
+  {
+    "id": "q12",
+    "query": "What model does the Groq provider use in generate.py?",
+    "expected_answer": "openai/gpt-oss-20b, set in GROQ_MODEL.",
+    "expected_chunk_ids": ["generate.py:48-48"],
+    "language": "python",
+    "query_type": "where-is",
+    "notes": null
+  },
+  {
+    "id": "q13",
+    "query": "How does chunk_file dispatch between Python and JavaScript files?",
+    "expected_answer": "It checks the file extension: .py files go to _chunk_python_file, .js files lazily import chunker_js and call chunk_js_file; anything else raises ValueError.",
+    "expected_chunk_ids": ["chunker.py:79-92"],
+    "language": "python",
+    "query_type": "how-does",
+    "notes": null
+  },
+  {
+    "id": "q14",
+    "query": "What does the home() route in app.py return?",
+    "expected_answer": "It reads and returns templates/index.html as an HTMLResponse.",
+    "expected_chunk_ids": ["app.py:27-29"],
+    "language": "python",
+    "query_type": "what-does",
+    "notes": null
+  },
+  {
+    "id": "q15",
+    "query": "What is EMBEDDING_DIM set to in embed.py?",
+    "expected_answer": "384, matching the migration's Vector(384) column.",
+    "expected_chunk_ids": ["embed.py:23-23"],
+    "language": "python",
+    "query_type": "where-is",
+    "notes": null
+  },
+  {
+    "id": "q16",
+    "query": "How does the app decide whether a chunk's citation should be trusted, and does that differ between /ask and the MCP tool?",
+    "expected_answer": "For /ask, generate.py calls strip_invalid_citations() once after a single LLM call, comparing each cited (file_path, start, end) against the actually-retrieved chunks. The MCP tool's query_codebase never runs that check at all — each chunk's citation field is built directly from its own DB row, so it's valid by construction since there's no LLM output to check.",
+    "expected_chunk_ids": ["generate.py:95-98", "mcp_server.py:56-67"],
+    "language": "python",
+    "query_type": "how-does",
+    "notes": "cross-chunk, paraphrased comparison"
+  },
+  {
+    "id": "q17",
+    "query": "If two chunks tie on RRF score, which one wins and why?",
+    "expected_answer": "Ties are broken first by number of ranked lists the chunk appeared in (more is better), then by the best (lowest) individual rank achieved in any list, then by chunk_id ascending as a final determinism floor.",
+    "expected_chunk_ids": ["retrieval.py:92-127"],
+    "language": "python",
+    "query_type": "why",
+    "notes": "paraphrase of tiebreak rule, cross-referenced with CLAUDE.md"
+  },
+  {
+    "id": "q18",
+    "query": "Why does a class produce more than one chunk when the file is ingested?",
+    "expected_answer": "The chunker deliberately creates one chunk for the whole class plus a separate chunk for each method inside it, trading extra storage for better retrieval recall.",
+    "expected_chunk_ids": ["chunker.py:109-134"],
+    "language": "python",
+    "query_type": "why",
+    "notes": "requires connecting class-chunk + method-chunk logic"
+  },
+  {
+    "id": "q19",
+    "query": "Why is asyncio.to_thread used for the Bedrock call but not for Groq?",
+    "expected_answer": "boto3 has no official async client, so calling its sync converse() method directly from an async function would block the event loop; asyncio.to_thread offloads it to a worker thread. AsyncGroq, by contrast, is natively async, so no offloading is needed.",
+    "expected_chunk_ids": ["generate.py:117-140", "generate.py:101-114"],
+    "language": "python",
+    "query_type": "why",
+    "notes": "cross-chunk comparison of two provider functions"
+  },
+  {
+    "id": "q20",
+    "query": "How does hybrid_search make sure an exact symbol-name match always outranks a semantic-only match?",
+    "expected_answer": "It re-derives which retrieved ids are true case-insensitive exact matches (symbol_name == query) and pins those ids at the very front of the result list, ahead of the RRF-merged remainder of exact-tier and semantic results.",
+    "expected_chunk_ids": ["retrieval.py:130-162"],
+    "language": "python",
+    "query_type": "how-does",
+    "notes": "paraphrased, requires combining pinned_ids logic with docstring reasoning"
+  },
+  {
+    "id": "q21",
+    "query": "What happens to a query after it's embedded but before results reach the LLM in the /ask flow?",
+    "expected_answer": "The embedded query and question go into hybrid_search() to get ranked chunk rows; app.py reshapes those rows into dicts, and answer_question() in generate.py formats them into a labeled context block before sending it to the chosen LLM provider.",
+    "expected_chunk_ids": ["app.py:65-89", "generate.py:69-84"],
+    "language": "python",
+    "query_type": "how-does",
+    "notes": "cross-chunk flow question spanning two files"
+  },
+  {
+    "id": "q22",
+    "query": "Why does the reasoner in graph.py stop being given the search tool after a certain number of searches?",
+    "expected_answer": "Live testing showed the model could get stuck repeating the same or near-identical search indefinitely without deciding it had enough information, eventually hitting the graph's recursion limit and crashing the request. After MAX_SEARCHES (5) searches, tool-binding is dropped entirely so the model can no longer call the tool and is forced to answer from what it already has.",
+    "expected_chunk_ids": ["graph.py:95-104", "graph.py:219-230"],
+    "language": "python",
+    "query_type": "why",
+    "notes": "paraphrase, cross-references MAX_SEARCHES constant and reasoner logic"
+  },
+  {
+    "id": "q23",
+    "query": "What's the difference between how validate_citations and strip_invalid_citations handle a bad citation?",
+    "expected_answer": "validate_citations() returns a structured report classifying each citation as valid or invalid without modifying the answer text. strip_invalid_citations() actually rewrites the answer, silently deleting any citation bracket that doesn't match a retrieved chunk while leaving the surrounding prose intact.",
+    "expected_chunk_ids": ["validate_citations.py:20-40", "validate_citations.py:43-73"],
+    "language": "python",
+    "query_type": "how-does",
+    "notes": "cross-chunk comparison of two functions in same file"
+  },
+  {
+    "id": "q24",
+    "query": "How does the module-level synthetic chunk get built for code that isn't inside any function or class?",
+    "expected_answer": "The chunker starts with the set of all line numbers in the file, subtracts every line range already claimed by a function/class/method chunk, and if anything remains it joins those leftover lines into one '<module>' chunk spanning from the first to last remaining line number.",
+    "expected_chunk_ids": ["chunker.py:147-165"],
+    "language": "python",
+    "query_type": "how-does",
+    "notes": "paraphrased description of module chunk logic"
+  },
+  {
+    "id": "q25",
+    "query": "Why does this project use three different Postgres drivers instead of just one?",
+    "expected_answer": "Each driver does a job the others can't cleanly do: asyncpg (via async SQLAlchemy) is the app's main async query path, psycopg2 is used by Alembic migrations and the sync test fixture (Alembic has no async mode), and psycopg v3 backs the LangGraph checkpointer because AsyncPostgresSaver expects its specific pool/row-factory shape.",
+    "expected_chunk_ids": ["checkpointer.py:1-18"],
+    "language": "python",
+    "query_type": "why",
+    "notes": "paraphrase combining checkpointer.py docstring with CLAUDE.md context"
+  },
+  {
+    "id": "q26",
+    "query": "What causes the reasoner in graph.py to retry its LLM call up to 3 times, and what happens on the last attempt?",
+    "expected_answer": "Groq's model can occasionally emit malformed tool-call JSON, raising groq.BadRequestError. The reasoner retries up to max_attempts (3); on the final attempt, if tool-binding was in use, it switches to the plain (no-tools) LLM and appends a message telling the model tool access is unavailable, guaranteeing a valid plain-text response instead of exhausting all retries.",
+    "expected_chunk_ids": ["graph.py:200-264"],
+    "language": "python",
+    "query_type": "why",
+    "notes": "paraphrased, spans full reasoner() function"
+  },
+  {
+    "id": "q27",
+    "query": "How does the critic node's approval logic decide whether to loop back to the reasoner?",
+    "expected_answer": "If the critic's structured result says approved, or if a retry has already happened once before, it stops looping and lets the graph proceed to finalize. Otherwise it appends feedback as a HumanMessage and sets needs_critic_retry so the graph routes back to the reasoner.",
+    "expected_chunk_ids": ["graph.py:354-397", "graph.py:400-401"],
+    "language": "python",
+    "query_type": "how-does",
+    "notes": "cross-chunk: critic() function plus route_after_critic()"
+  },
+  {
+    "id": "q28",
+    "query": "What's the difference in how repo_id is applied across the three retrieval queries in hybrid_search?",
+    "expected_answer": "All three queries (_exact_match_search, _semantic_search, and the tier-1 pinned-match query) apply the same optional repo_id filter pattern: CAST(:repo_id AS text) IS NULL OR repo_id = CAST(:repo_id AS text), so passing None searches across all repos unfiltered while a real repo_id scopes every stage to one repo.",
+    "expected_chunk_ids": ["retrieval.py:46-90", "retrieval.py:147-156"],
+    "language": "python",
+    "query_type": "how-does",
+    "notes": "cross-chunk consistency question across 3 query functions"
+  },
+  {
+    "id": "q29",
+    "query": "Why is InjectedState used for repo_id and top_k in the search_codebase tool instead of exposing them as normal tool parameters?",
+    "expected_answer": "Hiding repo_id and top_k from the LLM's tool-calling schema keeps repo isolation structurally enforced by the code rather than dependent on the model correctly repeating the right repo_id across a multi-turn reasoning loop; the values are injected from graph state at execution time instead of being chosen by the model.",
+    "expected_chunk_ids": ["graph.py:170-181"],
+    "language": "python",
+    "query_type": "why",
+    "notes": "paraphrase combining module docstring rationale with tool signature"
+  },
+  {
+    "id": "q30",
+    "query": "How would you compare the citation retry behavior for a hallucinated citation on /ask versus inside the LangGraph agent's finalize node?",
+    "expected_answer": "/ask (via generate.py) strips invalid citations once with no retry or escalation. The LangGraph agent's finalize node retries by looping back to the reasoner on the 1st invalid citation, and on a 2nd consecutive invalid citation pauses via interrupt() for human review, backed by AsyncPostgresSaver so the pause survives a restart.",
+    "expected_chunk_ids": ["generate.py:95-98", "graph.py:267-330"],
+    "language": "python",
+    "query_type": "how-does",
+    "notes": "explicitly cross-chunk comparison called out in CLAUDE.md"
+  },
+  {
+    "id": "q31",
+    "query": "How do I reset a user's password in this app?",
+    "expected_answer": "This is not covered in the provided document. There is no authentication, user account, or password-reset functionality anywhere in this codebase — the CLAUDE.md explicitly notes there is no auth on any route.",
+    "expected_chunk_ids": [],
+    "language": "python",
+    "query_type": "negative",
+    "notes": "no auth system exists"
+  },
+  {
+    "id": "q32",
+    "query": "What caching layer (e.g. Redis) does this project use to speed up repeated queries?",
+    "expected_answer": "This is not covered in the provided document. No caching layer exists in this codebase.",
+    "expected_chunk_ids": [],
+    "language": "python",
+    "query_type": "negative",
+    "notes": null
+  },
+  {
+    "id": "q33",
+    "query": "How does the app rate-limit requests to /ask?",
+    "expected_answer": "This is not covered in the provided document. There is no rate limiting implemented anywhere in the codebase.",
+    "expected_chunk_ids": [],
+    "language": "python",
+    "query_type": "negative",
+    "notes": null
+  },
+  {
+    "id": "q34",
+    "query": "What does the /agent endpoint do?",
+    "expected_answer": "This is not covered in the provided document. No /agent route exists — app.py only has three routes (/, /ingest, /ask), and the LangGraph agent in graph.py is not wired into the FastAPI app.",
+    "expected_chunk_ids": [],
+    "language": "python",
+    "query_type": "negative",
+    "notes": "tests knowledge of what's explicitly NOT implemented"
+  },
+  {
+    "id": "q35",
+    "query": "How is the IVFFlat index configured on the embedding column?",
+    "expected_answer": "This is not covered in the provided document. No ANN index (IVFFlat or otherwise) exists on chunks.embedding; semantic search runs as a sequential scan.",
+    "expected_chunk_ids": [],
+    "language": "python",
+    "query_type": "negative",
+    "notes": null
+  },
+  {
+    "id": "q36",
+    "query": "How does the ingestion pipeline handle authenticating against a private GitHub repository?",
+    "expected_answer": "This is not covered in the provided document. /ingest only runs a plain git clone of a public URL; there is no authenticated or private repo cloning support.",
+    "expected_chunk_ids": [],
+    "language": "python",
+    "query_type": "negative",
+    "notes": null
+  },
+  {
+    "id": "q37",
+    "query": "What does the run_background_job function do for long-running ingestion tasks?",
+    "expected_answer": "This is not covered in the provided document. No such function exists — /ingest is fully synchronous end-to-end with no background job or status endpoint.",
+    "expected_chunk_ids": [],
+    "language": "python",
+    "query_type": "negative",
+    "notes": "asks about a plausible-sounding but nonexistent function"
+  },
+  {
+    "id": "q38",
+    "query": "How does this project support parsing Go or Rust source files?",
+    "expected_answer": "This is not covered in the provided document. Only Python (via the ast module) and JavaScript are supported; no other languages are parsed.",
+    "expected_chunk_ids": [],
+    "language": "python",
+    "query_type": "negative",
+    "notes": null
+  },
+  {
+    "id": "q39",
+    "query": "What unit tests exist for the AWS Bedrock provider against a live AWS account?",
+    "expected_answer": "This is not covered in the provided document. Bedrock has never made a real call against live AWS; it's only verified against a mocked boto3 client, pending AWS account verification.",
+    "expected_chunk_ids": [],
+    "language": "python",
+    "query_type": "negative",
+    "notes": null
+  },
+  {
+    "id": "q40",
+    "query": "What's the recommended deployment setup for running this app on Kubernetes?",
+    "expected_answer": "This is not covered in the provided document. There is no Kubernetes configuration or deployment guidance in this codebase.",
+    "expected_chunk_ids": [],
+    "language": "python",
+    "query_type": "negative",
+    "notes": null
+  }
+]

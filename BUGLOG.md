@@ -804,6 +804,83 @@ Format: what broke → what I assumed was wrong → what was actually wrong → 
       output, and re-grepped afterward to confirm every reference resolved
       to a section that actually exists
 
+44. **Golden-set eval framework: `pip install ragas` would silently downgrade `openai` from 3.16.2 to 1.109.1**
+    → assumed RAGAS could be installed straightforwardly into the existing venv since its
+      other dependencies (langchain-core, pydantic) looked compatible
+    → a dry-run resolve (`pip install --dry-run ragas`) showed it pulls in
+      `openai-1.109.1` as a transitive dependency (via `langchain-openai`/`instructor`),
+      which would break `generate.py`'s `_answer_azure` -- that function is written
+      against `openai==3.16.2`'s `AsyncOpenAI` signature specifically (see that
+      function's docstring: openai jumped 1.x -> 3.x and gained new kwargs the
+      Azure/Foundry path relies on)
+    → fixed by not installing RAGAS at all. Retrieval metrics (precision@k,
+      recall@k, MRR) are computed directly in Python against `golden_set.json`'s
+      `expected_chunk_ids` via exact set overlap -- strictly more precise than
+      RAGAS's own LLM-judged `context_precision`/`context_recall` here, since exact
+      ground truth already exists. Faithfulness/relevance are scored by a small
+      custom judge (a separate Groq model, distinct from the production generation
+      model) with an explicit prompt, functionally equivalent to RAGAS's
+      `faithfulness`/`answer_relevancy` metrics without the dependency collision.
+
+45. **First real golden-set eval run: `GROQ_API_KEY` returned 401 `Invalid API Key` for every model, after succeeding once**
+    → assumed the key was simply invalid or malformed
+    → actually the very first call in the run (q01's production `answer_question`
+      call via `provider="groq"`, model `openai/gpt-oss-20b`) succeeded -- then every
+      subsequent call with the *same key and same model*, including a direct retry
+      of the identical call, returned `401 invalid_api_key`. Also reproduced with a
+      sync `Groq()` client hitting `/models`. Not a model-name typo (ruled out by
+      probing `llama-3.3-70b-versatile`, `llama3-8b-8192`, `gemma2-9b-it`,
+      `openai/gpt-oss-20b` -- all 401 once the key stopped working)
+    → root cause found on the retry: a STALE `GROQ_API_KEY` was already exported in
+      the shell's own OS-level environment (from an earlier, now-invalid key), and
+      every eval script loaded `.env` with `load_dotenv(override=False)` -- so the
+      already-set (wrong) shell value silently won over the correct value actually
+      in `.env`. Confirmed by printing `os.environ['GROQ_API_KEY'][:10]` before vs.
+      after `unset GROQ_API_KEY` -- two different key prefixes. Fixed by unsetting
+      the shell var and switching every eval script to `load_dotenv(override=True)`.
+      Also found while re-checking models: `llama-3.1-8b-instant` and
+      `llama-3.3-70b-versatile` (the originally planned judge model) are not
+      available on this account (`client.models.list()` doesn't list them) --
+      switched the judge to `qwen/qwen3.8-27b`, a different model family from the
+      production generation model (`openai/gpt-oss-20b`), confirmed live before use.
+
+46. **Golden-set eval: my own `abstained` heuristic (substring match against a fixed
+    phrase list) reported 0/10 correct abstentions on the negative set, when manual
+    reading of the actual answers showed 9/10 correctly declined to answer**
+    → assumed a short list of phrases ("not covered", "no information", etc.) would
+      catch how the model phrases "I don't know" across 10 different questions
+    → actually the model used phrasings my list didn't include at all -- "I couldn't
+      find any...", "does not contain any...", "I'm sorry, but none of the provided
+      code chunks...", "I don't see any..." -- so the heuristic under-counted its own
+      target by construction, not because the system failed
+    → this is a bug in my scoring code, not in the RAG pipeline; not fixed by
+      re-running or tuning anything (that's the LLM-judge's job, not a hardcoded
+      list), fixed by reporting the corrected count from manual inspection instead
+      of trusting the flawed heuristic's number. One genuine miss survived even on
+      manual review: q34 ("What does the /agent endpoint do?") answered as though
+      `ask_agent()`/LangGraph internals WERE a live `/agent` HTTP route, instead of
+      stating no such route exists -- a real, if subtle, hallucination that the
+      LLM-judge under-penalized (scored faithfulness 0.9, noting only the "mislabeling"
+      rather than treating it as inventing an endpoint's existence).
+
+47. **Golden-set eval: precision@5/recall@5 came out surprisingly low (0.067 / 0.250)
+    even on easy single-symbol lookups**
+    → assumed this reflected weak retrieval quality
+    → checked the actual ingested chunk boundaries directly against the DB (e.g.
+      `app.py` chunks are `<module>:1-95`, `home:28-29`, ...) and found several of
+      `golden_set.json`'s own `expected_chunk_ids` (e.g. `app.py:24-24` for a single
+      bare `app = FastAPI(...)` statement) can never match any real chunk -- the
+      chunker only ever produces one whole-file `<module>` chunk for non-def/class
+      top-level lines, never single-line chunks
+    → this is a golden-set construction bug (expected ranges narrower than the
+      chunker's actual output granularity), not a retrieval defect -- confirmed
+      retrieval is in fact returning the right chunk in most of these cases (e.g.
+      q02's `app.py:1-95` module chunk DOES contain the `FastAPI()` line), it's the
+      ground-truth line range that's wrong. Not fixed in this run (would count as
+      tuning after seeing the numbers) -- flagged as a follow-up: regenerate
+      `expected_chunk_ids` from real queried chunk boundaries, not hand-picked
+      symbol-declaration lines, then re-run retrieval metrics.
+
 ## Design decision -- documentation update convention (README + master record)
 
 - **Superseded statements are struck through and annotated, never deleted.**

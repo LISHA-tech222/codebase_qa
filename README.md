@@ -308,6 +308,31 @@ After the fixes, a real live run produced a detailed, accurate, correctly-cited 
 
 ---
 
+## 📈 Evaluation Framework
+
+A golden-set eval (`golden_set.json`, 40 items: 15 easy single-symbol lookups, 15 medium cross-chunk/paraphrased questions, 10 deliberately-out-of-scope negatives) run for real end-to-end — real chunks ingested with real FastEmbed embeddings (not the stub), real Groq generation, a real second LLM as judge — not simulated or hand-estimated.
+
+**Why not RAGAS.** Considered and rejected after a dry-run dependency check: `pip install ragas` resolves `openai` down to `1.109.1`, breaking the Azure provider's `AsyncOpenAI` usage (deliberately pinned to `openai==3.16.2`, see [LLM Providers](#-llm-providers)). Retrieval metrics (precision@k, recall@k, MRR) are instead computed directly against the golden set's exact expected chunk citations — strictly more precise than RAGAS's own LLM-judged context metrics, since exact ground truth already exists here. Faithfulness/relevance are scored by a small custom judge with an explicit, logged prompt, using a different Groq model family (`qwen/qwen3.8-27b`) from the production generation model (`openai/gpt-oss-20b`) so the judge never grades its own output.
+
+**Real numbers from the first run:**
+
+| Metric | Result |
+|---|---|
+| precision@5 / recall@5 / MRR (30 positive items) | 0.067 / 0.250 / 0.232 |
+| mean faithfulness (LLM-judge, 40 items) | 0.991 |
+| mean relevance (LLM-judge, 40 items) | 0.985 |
+| negative-set correct abstention (manual read, 10 items) | 9/10 |
+
+**Two real findings, not tuned away:**
+1. The low precision/recall is mostly a golden-set artifact, not a retrieval defect: several hand-picked `expected_chunk_ids` reference single lines narrower than any chunk the chunker can actually produce (e.g. a bare top-level statement only ever exists inside the whole-file `<module>` chunk — see "Approximate module citations" under [Known Limitations](#️-known-limitations)). Confirmed by checking real ingested chunk boundaries directly against the DB; retrieval was often actually correct under a wider range than the ground truth used.
+2. One genuine model failure survived: asked "what does the `/agent` endpoint do?" (a route that doesn't exist — see [`CLAUDE.md`](CLAUDE.md#not-implemented--not-live)'s "Not implemented / not live" section), the model answered as though `ask_agent()`/LangGraph internals *were* a live HTTP route, instead of stating no such route exists. The custom judge under-penalized this (0.9 faithfulness, called it "mislabeling") rather than flagging it as inventing an endpoint's existence.
+
+**Wired into Langfuse**, not just printed to a terminal: dataset `codebase-assistant-golden-set-v1` (40 items) plus a linked, trackable Run (`2026-09-27-real-run-01`) with per-item precision/recall/MRR/faithfulness/relevance scores, viewable in the same Langfuse project as the `/ask` traces.
+
+Full judge prompt, per-item results, and the eval scripts are in the conversation record backing this run (see `BUGLOG.md` #44–#47 for the full decision/bug trail, including a stale-shell-env `GROQ_API_KEY` that briefly looked like a revoked-key blocker and wasn't).
+
+---
+
 ## 💡 Key Engineering Decisions
 
 ### AST-based chunking
@@ -836,10 +861,11 @@ The GitHub repository URL is passed to Git as an argument rather than being inte
 
 - ~~**Python only:** multi-language parsing is not implemented yet.~~ — **updated:** JavaScript is now supported end-to-end (see [Language Support](#-language-support-multi-language-chunking)). Still a real, narrower limitation: only Python and JavaScript exist today, though adding a third is now a documented, repeatable procedure rather than a from-scratch design exercise.
 - **Synchronous ingestion architecture:** `/ingest` still holds the HTTP request open for the full clone + chunk + embed + insert pipeline, even though the individual DB/LLM calls inside it are now async — this is a request/response architecture limitation, not an I/O-blocking one. A background-job/status-endpoint design would address it separately.
-- **Module citations:** synthetic module chunks may have approximate line ranges.
+- **Module citations:** synthetic module chunks may have approximate line ranges. **Confirmed to matter in practice** (see [Evaluation Framework](#-evaluation-framework)): a golden-set eval's own hand-picked expected citations for single top-level statements couldn't match any real chunk boundary for exactly this reason.
 - **Citation UX:** invalid citation tags are removed, but the unsupported claim itself can remain.
 - **Repository size:** very large repositories may require incremental indexing or background jobs.
 - **Private repositories:** authenticated GitHub cloning is not implemented yet.
+- **Eval judge under-penalizes endpoint-existence hallucinations:** the custom faithfulness judge scored a real fabrication (the model describing a nonexistent `/agent` HTTP route) as a 0.9 "mislabeling" rather than a low-faithfulness failure — see [Evaluation Framework](#-evaluation-framework). Judge calibration on this failure mode is itself an open item, not just the underlying model behavior.
 
 ---
 
@@ -896,6 +922,13 @@ The GitHub repository URL is passed to Git as an argument rather than being inte
 - ~~LangGraph, if the actual control flow shows real branching/routing worth modeling as a graph~~ — implemented as a real tool-calling agent, verified live (see [LangGraph Agent](#-langgraph-agent)).
 - ~~Azure AI Foundry as a third alternate LLM provider~~ — implemented and **live-verified** (not pending, unlike Bedrock) — see [LLM Providers](#-llm-providers).
 
+### Evaluation
+
+- ~~A golden-set eval framework (retrieval + faithfulness/relevance metrics)~~ — implemented and run for real against a live golden set; see [Evaluation Framework](#-evaluation-framework).
+- Regenerate `expected_chunk_ids` from actual queried chunk boundaries (not hand-picked symbol-declaration lines) and re-run retrieval metrics — the current precision/recall numbers are understated by this known golden-set artifact.
+- Extend the eval to the production `nlp-ml-pipeline` test repository's own golden set, rather than one derived from this repo's own source.
+- Investigate why the custom judge under-scores endpoint-existence hallucinations relative to more clear-cut unsupported claims — possibly needs an explicit judge-prompt rule for "does this cited entity/route/function exist at all," not just "is this claim traceable to a chunk."
+
 ---
 
 ## 💼 Why This Project Is Interesting
@@ -941,6 +974,8 @@ That makes the project an example of engineering based on observed system behavi
 > **Codebase Q&A Assistant** is a production-deployed RAG system for querying Python repositories. I built AST-based chunking to preserve semantic code structures, generated 384-dimensional FastEmbed embeddings, and stored them in PostgreSQL with pgvector. I implemented hybrid retrieval combining exact symbol matching with semantic vector search and RRF, then pinned exact matches after testing showed pure RRF could produce incorrect rankings. Retrieved source is passed to an LLM, and citations are validated against the actual retrieved chunks. I later converted the DB and LLM layers to async (asyncpg/async SQLAlchemy, AsyncGroq), correctly distinguishing I/O-bound calls worth converting from CPU-bound work that async wouldn't help; wrapped the retrieval layer as an MCP tool usable by any MCP-compatible client, verified against three independent MCP clients including Claude Desktop; added AWS Bedrock as a second, per-request-selectable LLM provider alongside Groq; instrumented the whole pipeline with Langfuse; and built a real tool-calling agent in LangGraph on top of all of it — a reasoner that decides via genuine function-calling whether to search again or answer, a separate critic agent that reviews substance and hands back specific feedback, and human-in-the-loop for repeated citation failures backed by Postgres checkpointing so it survives real restarts. The most valuable finding in the whole project came from live-testing that agent against a real API key rather than trusting my mocked tests: a bug where the model's tool results only said "found N results" without the actual code was completely invisible to every mocked test (none of them depended on the model reading real content), and only surfaced when a real model, honestly trying to answer, correctly reported it didn't have content it had technically retrieved. The Bedrock path is code-complete and verified against a mocked AWS client — live verification is honestly still pending AWS account activation. The application is exposed through FastAPI, containerized with Docker, tested with GitHub Actions, deployed on Render, and includes a custom browser UI. Separately, I deployed the same application to AWS (EC2 + RDS, with RDS locked down via security-group-to-security-group referencing rather than IP allowlisting) as a scoped infrastructure exercise to close the AWS/DevOps gap in target job descriptions.
 >
 > **Update:** three further additions since the above. First, I found the RRF merge had no explicit rule for exact score ties — it silently depended on dict-insertion order — and replaced it with a deterministic three-level rule (list agreement, then best rank, then ID), verified with targeted unit tests constructing deliberate ties. Second, I extended chunking beyond Python to JavaScript via tree-sitter, through a single extension-dispatch point that required zero changes to the downstream ingestion/retrieval code, and packaged the underlying procedure as a real, schema-verified Claude Code plugin so adding a third language is now a documented, repeatable process rather than a from-scratch exercise. Third, I added Azure AI Foundry as a third LLM provider — and unlike Bedrock, verified it with an actual live call against the real endpoint, not just a mocked client; getting there meant catching my own incorrect assumption that the standard `AsyncAzureOpenAI` client would work, when the endpoint actually provisioned needed the newer unified `AsyncOpenAI`-with-`base_url` pattern instead — confirmed against Microsoft's own docs before writing the integration.
+>
+> **Second update:** built and ran a real golden-set evaluation framework — 40 hand-built questions (easy/medium/negative), real embeddings, real Groq generation, and a second, different-family LLM as judge, with retrieval precision/recall/MRR computed directly against exact expected citations rather than adopting RAGAS wholesale (a dependency dry-run showed RAGAS would silently downgrade `openai` and break the Azure provider — caught before installing, not after). The run surfaced two genuine findings I reported rather than tuned away: the low retrieval-precision numbers trace mostly to my own golden set citing line ranges narrower than any real chunk boundary, and the system's one true hallucination in 40 items — describing a nonexistent `/agent` HTTP endpoint — was under-penalized by my own judge prompt, which is now a flagged follow-up in its own right. Results are wired into Langfuse as a real, linked dataset Run, not just printed to a terminal.
 
 ---
 
@@ -950,7 +985,8 @@ For the detailed engineering history, see:
 
 - `BUGLOG.md` — full debugging/build history.
 - ~~`PROJECT_RECORD.md` — architecture, decisions, deployment history, limitations, and interview notes.~~ *(previous, incorrect path)*
-- **Corrected path:** `revision/codebase_qa_complete_master_project_record (1).md` — architecture, decisions, deployment history, limitations, and interview notes (Steps 0–7). Kept out of version control (`revision/` is git-ignored) as personal interview-prep material, alongside the AWS deployment write-up in the same directory.
+- **Corrected path:** `revision/codebase_qa_complete_master_project_record (1).md` — architecture, decisions, deployment history, limitations, and interview notes (Steps 0–8). Kept out of version control (`revision/` is git-ignored) as personal interview-prep material, alongside the AWS deployment write-up in the same directory.
+- `golden_set.json` — the 40-item golden set backing [Evaluation Framework](#-evaluation-framework) (15 easy, 15 medium/cross-chunk, 10 negative), derived from this repo's own source rather than the production `nlp-ml-pipeline` test repo — a known, disclosed gap, not an oversight.
 
 ---
 
